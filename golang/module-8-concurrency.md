@@ -9319,19 +9319,2709 @@ func getEnvOrDefault(key, defaultValue string) string {
 
    By implementing these techniques, you can create worker pools that gracefully handle panics, maintain stability, and provide detailed diagnostics when issues occur.
 
-### 10. Context for Cancellation
+### 10. Context for Cancellation and Timeouts
 
 **Concise Explanation:**
-The context package in Go provides a way to carry deadlines, cancellation signals, and request-scoped values across API boundaries and between goroutines. It's particularly useful for controlling concurrency by allowing you to explicitly signal cancellation to all goroutines involved in a specific operation. This enables graceful shutdown, timeout handling, and resource cleanup in concurrent systems.
+The context package in Go provides a way to carry deadlines, cancellation signals, and request-scoped values across API boundaries and between goroutines. It's particularly useful in concurrent programs to propagate cancellation signals, implement timeouts, and ensure resources are freed when operations are no longer needed. Context allows parent operations to control child operations, enabling clean cancellation hierarchies.
 
 **Where to Use:**
-- To implement timeouts for operations
 - To propagate cancellation signals across goroutines
-- In API handlers to cancel operations when clients disconnect
-- To share request-scoped values between goroutines
-- For graceful shutdown of concurrent operations
-- To implement deadlines for multi-stage operations
-- To limit resource usage by cancelling unnecessary work
+- To implement timeouts for operations
+- To carry request-scoped values through your program
+- For controlling the lifetime of concurrent operations
+- To implement graceful shutdown of services
+- When working with APIs that accept context
+- To manage resources across concurrent operations
+- To implement deadline-aware processing
+
+**Code Snippet:**
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "os/signal"
+    "time"
+)
+
+func main() {
+    // Create a base context
+    ctx := context.Background()
+    
+    // Example 1: Context with a deadline (timeout)
+    fmt.Println("Example 1: Context with deadline")
+    deadlineCtx, cancel := context.WithDeadline(ctx, time.Now().Add(2*time.Second))
+    defer cancel() // Always call cancel to avoid resource leaks
+    
+    go func() {
+        // Simulate work that respects the deadline
+        if err := doWorkWithDeadline(deadlineCtx); err != nil {
+            fmt.Printf("Deadline work error: %v\n", err)
+        }
+    }()
+    
+    // Wait to see the result
+    time.Sleep(3 * time.Second)
+    
+    // Example 2: Context with timeout
+    fmt.Println("\nExample 2: Context with timeout")
+    timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+    defer cancel()
+    
+    go func() {
+        // Simulate work that respects timeout
+        if err := doWorkWithTimeout(timeoutCtx); err != nil {
+            fmt.Printf("Timeout work error: %v\n", err)
+        }
+    }()
+    
+    // Wait to see the result
+    time.Sleep(2 * time.Second)
+    
+    // Example 3: Context with cancellation
+    fmt.Println("\nExample 3: Context with cancellation")
+    cancelCtx, cancel := context.WithCancel(ctx)
+    
+    go func() {
+        // Simulate work that respects cancellation
+        if err := doWorkWithCancellation(cancelCtx); err != nil {
+            fmt.Printf("Cancellation work error: %v\n", err)
+        }
+    }()
+    
+    // Let it run briefly, then cancel
+    time.Sleep(500 * time.Millisecond)
+    fmt.Println("Cancelling the operation")
+    cancel()
+    time.Sleep(1 * time.Second)
+    
+    // Example 4: Context with value
+    fmt.Println("\nExample 4: Context with value")
+    type key string
+    userKey := key("user")
+    
+    valueCtx := context.WithValue(ctx, userKey, "john_doe")
+    
+    go func() {
+        processWithUserInfo(valueCtx, userKey)
+    }()
+    
+    // Wait to see the result
+    time.Sleep(1 * time.Second)
+    
+    // Example 5: HTTP request with context
+    fmt.Println("\nExample 5: HTTP request with context")
+    serverCtx, serverCancel := context.WithCancel(ctx)
+    defer serverCancel()
+    
+    // Start HTTP server
+    server := startServer(serverCtx)
+    
+    // Make a request with timeout
+    makeRequestWithTimeout()
+    
+    // Shut down the server
+    serverCancel()
+    server.Shutdown(context.Background())
+    
+    fmt.Println("\nAll examples complete")
+}
+
+// Function that does work respecting a deadline
+func doWorkWithDeadline(ctx context.Context) error {
+    // Check if deadline is set
+    deadline, ok := ctx.Deadline()
+    if ok {
+        fmt.Printf("Deadline set to: %v (in %v)\n", deadline, time.Until(deadline))
+    } else {
+        fmt.Println("No deadline set")
+    }
+    
+    // Simulate work that takes 3 seconds (longer than the deadline)
+    for i := 0; i < 3; i++ {
+        // Check if context is done before each unit of work
+        select {
+        case <-ctx.Done():
+            return fmt.Errorf("work cancelled due to deadline: %v", ctx.Err())
+        case <-time.After(1 * time.Second):
+            fmt.Printf("Completed %d/3 of deadline work\n", i+1)
+        }
+    }
+    
+    return nil
+}
+
+// Function that does work respecting a timeout
+func doWorkWithTimeout(ctx context.Context) error {
+    // Loop until context is cancelled or timeout reached
+    for i := 0; ; i++ {
+        // Check if we should stop
+        select {
+        case <-ctx.Done():
+            return fmt.Errorf("work cancelled due to timeout: %v", ctx.Err())
+        default:
+            // Continue working
+        }
+        
+        // Simulate some work
+        fmt.Printf("Doing timeout work unit %d\n", i+1)
+        time.Sleep(400 * time.Millisecond)
+    }
+}
+
+// Function that does work respecting cancellation
+func doWorkWithCancellation(ctx context.Context) error {
+    for i := 0; ; i++ {
+        select {
+        case <-ctx.Done():
+            return fmt.Errorf("work cancelled by caller: %v", ctx.Err())
+        default:
+            // Continue working
+        }
+        
+        // Simulate work
+        fmt.Printf("Doing cancellable work unit %d\n", i+1)
+        time.Sleep(200 * time.Millisecond)
+    }
+}
+
+// Function that uses context values
+func processWithUserInfo(ctx context.Context, userKey interface{}) {
+    // Extract user from context
+    if username, ok := ctx.Value(userKey).(string); ok {
+        fmt.Printf("Processing request for user: %s\n", username)
+    } else {
+        fmt.Println("No user found in context")
+    }
+}
+
+// HTTP server that uses context for shutdown
+func startServer(ctx context.Context) *http.Server {
+    server := &http.Server{
+        Addr: ":8080",
+        Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Get context from request
+            reqCtx := r.Context()
+            
+            fmt.Println("Processing request...")
+            
+            // Simulate work with potential timeout from request context
+            select {
+            case <-time.After(1 * time.Second):
+                fmt.Fprintln(w, "Request processed successfully")
+                fmt.Println("Request completed")
+            case <-reqCtx.Done():
+                // Client cancelled the request
+                fmt.Println("Request cancelled by client:", reqCtx.Err())
+                return
+            }
+        }),
+    }
+    
+    // Start server in a goroutine
+    go func() {
+        fmt.Println("Starting HTTP server on :8080")
+        if err := server.ListenAndServe(); err != http.ErrServerClosed {
+            log.Fatalf("HTTP server error: %v", err)
+        }
+        fmt.Println("HTTP server stopped")
+    }()
+    
+    // Monitor the context for cancellation to shut down server
+    go func() {
+        <-ctx.Done()
+        fmt.Println("Shutting down HTTP server...")
+        
+        // Create a timeout for graceful shutdown
+        shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        
+        if err := server.Shutdown(shutdownCtx); err != nil {
+            log.Fatalf("HTTP server shutdown error: %v", err)
+        }
+    }()
+    
+    return server
+}
+
+// Make an HTTP request with timeout
+func makeRequestWithTimeout() {
+    // Create a context with timeout for the request
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel()
+    
+    // Create request with context
+    req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:8080", nil)
+    if err != nil {
+        fmt.Printf("Error creating request: %v\n", err)
+        return
+    }
+    
+    fmt.Println("Sending HTTP request with 2-second timeout")
+    
+    // Send the request
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        fmt.Printf("HTTP request error: %v\n", err)
+        return
+    }
+    defer resp.Body.Close()
+    
+    fmt.Printf("HTTP response status: %s\n", resp.Status)
+}
+```
+
+**Real-World Example:**
+A service that performs distributed operations with context-based coordination:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "os/signal"
+    "sync"
+    "syscall"
+    "time"
+)
+
+// Request represents an incoming job request
+type Request struct {
+    ID         string          `json:"id"`
+    Operations []string        `json:"operations"`
+    Timeout    int             `json:"timeout_seconds"`
+    Data       json.RawMessage `json:"data"`
+}
+
+// Result represents the outcome of a job
+type Result struct {
+    RequestID string                 `json:"request_id"`
+    Status    string                 `json:"status"`
+    Results   map[string]interface{} `json:"results,omitempty"`
+    Error     string                 `json:"error,omitempty"`
+    StartTime time.Time              `json:"start_time"`
+    EndTime   time.Time              `json:"end_time"`
+}
+
+// Service handles processing of distributed operations
+type Service struct {
+    server         *http.Server
+    operationMap   map[string]Operation
+    activeRequests sync.Map
+    mu             sync.RWMutex
+}
+
+// Operation represents a unit of work that can be performed
+type Operation func(ctx context.Context, data json.RawMessage) (interface{}, error)
+
+// NewService creates a new service
+func NewService() *Service {
+    service := &Service{
+        operationMap: make(map[string]Operation),
+    }
+    
+    // Register available operations
+    service.registerOperations()
+    
+    // Set up HTTP server with handlers
+    mux := http.NewServeMux()
+    mux.HandleFunc("/process", service.handleProcess)
+    mux.HandleFunc("/status/", service.handleStatus)
+    mux.HandleFunc("/cancel/", service.handleCancel)
+    
+    service.server = &http.Server{
+        Addr:    ":8080",
+        Handler: mux,
+    }
+    
+    return service
+}
+
+// Start begins the service
+func (s *Service) Start() {
+    // Start HTTP server
+    go func() {
+        log.Println("Starting service on :8080")
+        if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
+            log.Fatalf("HTTP server error: %v", err)
+        }
+    }()
+}
+
+// Shutdown gracefully stops the service
+func (s *Service) Shutdown(ctx context.Context) error {
+    log.Println("Shutting down service...")
+    
+    // First, shutdown HTTP server
+    if err := s.server.Shutdown(ctx); err != nil {
+        return err
+    }
+    
+    // Then cancel all active requests
+    var wg sync.WaitGroup
+    
+    s.activeRequests.Range(func(key, value interface{}) bool {
+        requestID := key.(string)
+        cancelFunc := value.(context.CancelFunc)
+        
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            log.Printf("Cancelling request %s due to shutdown", requestID)
+            cancelFunc()
+        }()
+        return true
+    })
+    
+    // Wait for all cancellations to complete or timeout
+    done := make(chan struct{})
+    go func() {
+        wg.Wait()
+        close(done)
+    }()
+    
+    select {
+    case <-done:
+        log.Println("All requests cancelled successfully")
+    case <-ctx.Done():
+        log.Println("Timeout waiting for request cancellations")
+    }
+    
+    return nil
+}
+
+// Register operations that this service can perform
+func (s *Service) registerOperations() {
+    // Simulated database operation
+    s.operationMap["fetch_data"] = func(ctx context.Context, data json.RawMessage) (interface{}, error) {
+        // Parse parameters
+        var params struct {
+            Query string `json:"query"`
+            Limit int    `json:"limit"`
+        }
+        
+        if err := json.Unmarshal(data, &params); err != nil {
+            return nil, fmt.Errorf("invalid parameters: %w", err)
+        }
+        
+        // Check context before expensive operation
+        if err := ctx.Err(); err != nil {
+            return nil, err
+        }
+        
+        // Simulate database fetch with timeout awareness
+        return performDatabaseOperation(ctx, params.Query, params.Limit)
+    }
+    
+    // Simulated external API call
+    s.operationMap["external_api"] = func(ctx context.Context, data json.RawMessage) (interface{}, error) {
+        // Parse parameters
+        var params struct {
+            Endpoint string `json:"endpoint"`
+            Method   string `json:"method"`
+            Payload  json.RawMessage `json:"payload"`
+        }
+        
+        if err := json.Unmarshal(data, &params); err != nil {
+            return nil, fmt.Errorf("invalid parameters: %w", err)
+        }
+        
+        // Make API call with timeout awareness
+        return callExternalAPI(ctx, params.Endpoint, params.Method, params.Payload)
+    }
+    
+    // Simulated computation
+    s.operationMap["compute"] = func(ctx context.Context, data json.RawMessage) (interface{}, error) {
+        // Parse parameters
+        var params struct {
+            Algorithm string `json:"algorithm"`
+            Input     json.RawMessage `json:"input"`
+        }
+        
+        if err := json.Unmarshal(data, &params); err != nil {
+            return nil, fmt.Errorf("invalid parameters: %w", err)
+        }
+        
+        // Perform computation with timeout awareness
+        return performComputation(ctx, params.Algorithm, params.Input)
+    }
+}
+
+// HTTP handler for processing requests
+func (s *Service) handleProcess(w http.ResponseWriter, r *http.Request) {
+    // Only allow POST method
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Parse the request
+    var req Request
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+        return
+    }
+    
+    // Generate ID if not provided
+    if req.ID == "" {
+        req.ID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+    }
+    
+    // Validate timeout
+    if req.Timeout <= 0 {
+        req.Timeout = 30 // Default timeout
+    }
+    
+    // Create context with timeout
+    ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.Timeout)*time.Second)
+    
+    // Store cancellation function for potential explicit cancellation
+    s.activeRequests.Store(req.ID, cancel)
+    defer func() {
+        s.activeRequests.Delete(req.ID)
+    }()
+    
+    // Start processing in a goroutine
+    go func() {
+        defer cancel() // Ensure context is cancelled when done
+        
+        result := s.processRequest(ctx, req)
+        
+        // Store the result (in a real system, this would be persistent)
+        s.storeResult(req.ID, result)
+    }()
+    
+    // Return accepted response
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusAccepted)
+    json.NewEncoder(w).Encode(map[string]string{
+        "request_id": req.ID,
+        "status":     "processing",
+        "message":    "Request accepted for processing",
+    })
+}
+
+// HTTP handler for checking request status
+func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
+    // Extract request ID from URL path
+    requestID := r.URL.Path[len("/status/"):]
+    if requestID == "" {
+        http.Error(w, "Missing request ID", http.StatusBadRequest)
+        return
+    }
+    
+    // Check if request is still active
+    if _, ok := s.activeRequests.Load(requestID); ok {
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]string{
+            "request_id": requestID,
+            "status":     "processing",
+            "message":    "Request is still processing",
+        })
+        return
+    }
+    
+    // Check for stored result
+    result, found := s.getResult(requestID)
+    if !found {
+        http.Error(w, "Request not found", http.StatusNotFound)
+        return
+    }
+    
+    // Return the result
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
+// HTTP handler for cancelling requests
+func (s *Service) handleCancel(w http.ResponseWriter, r *http.Request) {
+    // Extract request ID from URL path
+    requestID := r.URL.Path[len("/cancel/"):]
+    if requestID == "" {
+        http.Error(w, "Missing request ID", http.StatusBadRequest)
+        return
+    }
+    
+    // Check if request exists and can be cancelled
+    if cancelFunc, ok := s.activeRequests.Load(requestID); ok {
+        // Call the cancellation function
+        cancelFunc.(context.CancelFunc)()
+        
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]string{
+            "request_id": requestID,
+            "status":     "cancelled",
+            "message":    "Request has been cancelled",
+        })
+    } else {
+        // Request not found or already completed
+        http.Error(w, "Request not found or already completed", http.StatusNotFound)
+    }
+}
+
+// Process a request with its operations
+func (s *Service) processRequest(ctx context.Context, req Request) Result {
+    result := Result{
+        RequestID: req.ID,
+        Status:    "processing",
+        Results:   make(map[string]interface{}),
+        StartTime: time.Now(),
+    }
+    
+    // Check if we have valid operations
+    if len(req.Operations) == 0 {
+        result.Status = "failed"
+        result.Error = "no operations specified"
+        result.EndTime = time.Now()
+        return result
+    }
+    
+    // Set up a wait group to track operations
+    var wg sync.WaitGroup
+    resultsMutex := sync.Mutex{}
+    
+    // Execute operations concurrently
+    for _, opName := range req.Operations {
+        // Check if the operation exists
+        s.mu.RLock()
+        operation, ok := s.operationMap[opName]
+        s.mu.RUnlock()
+        
+        if !ok {
+            resultsMutex.Lock()
+            result.Results[opName] = map[string]interface{}{
+                "status": "failed",
+                "error":  "operation not found",
+            }
+            resultsMutex.Unlock()
+            continue
+        }
+        
+        // Start this operation
+        wg.Add(1)
+        go func(name string, op Operation) {
+            defer wg.Done()
+            
+            // Execute the operation with a deadline
+            opResult, err := op(ctx, req.Data)
+            
+            // Store the result
+            resultsMutex.Lock()
+            defer resultsMutex.Unlock()
+            
+            if err != nil {
+                result.Results[name] = map[string]interface{}{
+                    "status": "failed",
+                    "error":  err.Error(),
+                }
+            } else {
+                result.Results[name] = map[string]interface{}{
+                    "status": "success",
+                    "data":   opResult,
+                }
+            }
+        }(opName, operation)
+    }
+    
+    // Wait for all operations to complete or context to be cancelled
+    done := make(chan struct{})
+    go func() {
+        wg.Wait()
+        close(done)
+    }()
+    
+    // Wait for completion or cancellation
+    select {
+    case <-done:
+        result.Status = "completed"
+    case <-ctx.Done():
+        result.Status = "cancelled"
+        result.Error = ctx.Err().Error()
+    }
+    
+    result.EndTime = time.Now()
+    return result
+}
+
+// In a real system, results would be stored persistently
+// For simplicity, we're using an in-memory map
+var resultStore = make(map[string]Result)
+var resultStoreMutex sync.RWMutex
+
+func (s *Service) storeResult(id string, result Result) {
+    resultStoreMutex.Lock()
+    defer resultStoreMutex.Unlock()
+    resultStore[id] = result
+}
+
+func (s *Service) getResult(id string) (Result, bool) {
+    resultStoreMutex.RLock()
+    defer resultStoreMutex.RUnlock()
+    result, found := resultStore[id]
+    return result, found
+}
+
+// Simulated operations
+func performDatabaseOperation(ctx context.Context, query string, limit int) (interface{}, error) {
+    // Check if already cancelled
+    if err := ctx.Err(); err != nil {
+        return nil, err
+    }
+    
+    // Simulate query execution that takes time
+    log.Printf("Executing database query: %s (limit: %d)", query, limit)
+    
+    // Check context periodically during execution
+    select {
+    case <-time.After(1500 * time.Millisecond):
+        // Continue with operation
+    case <-ctx.Done():
+        return nil, fmt.Errorf("database operation cancelled: %w", ctx.Err())
+    }
+    
+    // Generate some fake results
+    results := make([]map[string]interface{}, 0, limit)
+    for i := 0; i < limit; i++ {
+        results = append(results, map[string]interface{}{
+            "id":    fmt.Sprintf("row-%d", i),
+            "value": fmt.Sprintf("Value %d for %s", i, query),
+        })
+        
+        // Check context after each item (allows for fast cancellation)
+        if i%10 == 0 && ctx.Err() != nil {
+            return nil, fmt.Errorf("database operation cancelled while generating results: %w", ctx.Err())
+        }
+    }
+    
+    return results, nil
+}
+
+func callExternalAPI(ctx context.Context, endpoint string, method string, payload json.RawMessage) (interface{}, error) {
+    // Create a request with timeout from context
+    log.Printf("Calling API %s %s", method, endpoint)
+    
+    // Create HTTP client that respects context deadlines
+    client := &http.Client{}
+    req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+    if err != nil {
+        return nil, fmt.Errorf("creating request: %w", err)
+    }
+    
+    // Set content type if we have a payload
+    if len(payload) > 0 {
+        req.Header.Set("Content-Type", "application/json")
+    }
+    
+    // Make the request
+    resp, err := client.Do(req)
+    if err != nil {
+        // Check if it was due to context cancellation
+        if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+            return nil, fmt.Errorf("API call cancelled: %w", ctx.Err())
+        }
+        return nil, fmt.Errorf("API call failed: %w", err)
+    }
+    defer resp.Body.Close()
+    
+    // Parse the response
+    var result interface{}
+    if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+        return nil, fmt.Errorf("parsing API response: %w", err)
+    }
+    
+    return result, nil
+}
+
+func performComputation(ctx context.Context, algorithm string, input json.RawMessage) (interface{}, error) {
+    log.Printf("Performing computation using %s algorithm", algorithm)
+    
+    // Check algorithm type
+    var result interface{}
+    var err error
+    
+    switch algorithm {
+    case "fibonacci":
+        var n int
+        if err := json.Unmarshal(input, &n); err != nil {
+            return nil, fmt.Errorf("invalid input for fibonacci: %w", err)
+        }
+        
+        result, err = computeFibonacci(ctx, n)
+        
+    case "sort":
+        var items []int
+        if err := json.Unmarshal(input, &items); err != nil {
+            return nil, fmt.Errorf("invalid input for sort: %w", err)
+        }
+        
+        result, err = sortItems(ctx, items)
+        
+    default:
+        return nil, fmt.Errorf("unknown algorithm: %s", algorithm)
+    }
+    
+    if err != nil {
+        return nil, err
+    }
+    
+    return result, nil
+}
+
+// Compute Fibonacci number with context cancellation support
+func computeFibonacci(ctx context.Context, n int) (int, error) {
+    // Base cases
+    if n <= 0 {
+        return 0, nil
+    }
+    if n == 1 {
+        return 1, nil
+    }
+    
+    // Check context before computation
+    if err := ctx.Err(); err != nil {
+        return 0, err
+    }
+    
+    // For larger values, use iterative approach with periodic context checks
+    if n > 10 {
+        a, b := 0, 1
+        for i := 2; i <= n; i++ {
+            a, b = b, a+b
+            
+            // Periodically check for cancellation
+            if i%100 == 0 {
+                if err := ctx.Err(); err != nil {
+                    return 0, fmt.Errorf("fibonacci computation cancelled: %w", err)
+                }
+            }
+        }
+        return b, nil
+    }
+    
+    // For smaller values, use recursive approach
+    // (In a real implementation, you'd use memoization)
+    fib1, err := computeFibonacci(ctx, n-1)
+    if err != nil {
+        return 0, err
+    }
+    
+    fib2, err := computeFibonacci(ctx, n-2)
+    if err != nil {
+        return 0, err
+    }
+    
+    return fib1 + fib2, nil
+}
+
+// Sort items with context cancellation support
+func sortItems(ctx context.Context, items []int) ([]int, error) {
+    // Check context before starting
+    if err := ctx.Err(); err != nil {
+        return nil, err
+    }
+    
+    // Make a copy to avoid modifying the input
+    result := make([]int, len(items))
+    copy(result, items)
+    
+    // Use a simple bubble sort with context checks
+    // (In production, you'd use a more efficient algorithm)
+    for i := 0; i < len(result); i++ {
+        // Check context periodically
+        if i%100 == 0 {
+            if err := ctx.Err(); err != nil {
+                return nil, fmt.Errorf("sort cancelled: %w", err)
+            }
+        }
+        
+        for j := 0; j < len(result)-i-1; j++ {
+            if result[j] > result[j+1] {
+                result[j], result[j+1] = result[j+1], result[j]
+            }
+        }
+    }
+    
+    return result, nil
+}
+
+func main() {
+    // Create a new service
+    service := NewService()
+    
+    // Start the service
+    service.Start()
+    
+    // Set up signal handling for graceful shutdown
+    signalCh := make(chan os.Signal, 1)
+    signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+    
+    // Wait for termination signal
+    sig := <-signalCh
+    log.Printf("Received signal: %v, initiating graceful shutdown", sig)
+    
+    // Create a shutdown context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    
+    // Shutdown the service
+    if err := service.Shutdown(ctx); err != nil {
+        log.Fatalf("Service shutdown error: %v", err)
+    }
+    
+    log.Println("Service shutdown complete")
+}
+```
+
+**Common Pitfalls:**
+- Not cancelling contexts to release resources, causing leaks
+- Passing the wrong context through API boundaries
+- Using context.Background() or context.TODO() inappropriately
+- Storing request-scoped values in global variables instead of context
+- Using context.Value() for critical parameters instead of function arguments
+- Over-nesting contexts, making them hard to track
+- Not checking ctx.Err() in long-running operations
+- Using context for long-term storage rather than request-scoped data
+- Creating deeply nested context hierarchies that are hard to reason about
+- Not handling timeouts correctly in resource cleanup
+
+**Confusion Questions:**
+
+1. **Q: When should I use context.Background() vs. context.TODO()?**
+
+   A: Understanding when to use `context.Background()` versus `context.TODO()` is important for writing clear and maintainable Go code. Although both functions return an empty context with no values, deadlines, or cancellation, they have different semantic meanings:
+
+   **context.Background()**
+
+   ```go
+   ctx := context.Background()
+   ```
+
+   **When to use context.Background()**:
+
+   1. **As the root context** for your application or long-running process
+      ```go
+      func main() {
+          ctx := context.Background()
+          // Derive other contexts from this root
+          ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+          defer cancel()
+          // ...
+      }
+      ```
+
+   2. **For the "top-level" of a request chain**
+      ```go
+      func startProcess() {
+          ctx := context.Background()
+          processRequest(ctx, req)
+      }
+      ```
+
+   3. **For initialization code** where no existing context is available
+      ```go
+      func initializeApp() {
+          ctx := context.Background()
+          db, err := connectToDatabase(ctx)
+          // ...
+      }
+      ```
+
+   4. **For tests** when you need a simple context
+      ```go
+      func TestMyFunction(t *testing.T) {
+          ctx := context.Background()
+          result, err := myFunction(ctx, args)
+          // ...
+      }
+      ```
+
+   **context.TODO()**
+
+   ```go
+   ctx := context.TODO()
+   ```
+
+   **When to use context.TODO()**:
+
+   1. **As a placeholder** when you're not sure which context to use but plan to fix it later
+      ```go
+      // FIXME: Replace with proper context once we refactor the API
+      ctx := context.TODO()
+      ```
+
+   2. **During incremental code migration** to a context-aware API
+      ```go
+      // We're in the process of adding context to all functions
+      func legacyFunction() {
+          ctx := context.TODO() // Will be replaced with a proper context later
+          newContextAwareFunction(ctx)
+      }
+      ```
+
+   3. **When you expect a context will be needed** but don't have one yet
+      ```go
+      func someFunction() {
+          // We know we'll need a context eventually but don't have one yet
+          ctx := context.TODO()
+          // ...
+      }
+      ```
+
+   **Practical differences:**
+
+   While both functions are functionally identical (they both return an empty context), they signal different intent:
+
+   - **Background()**: "This is deliberately a new, empty context, appropriate for this root position"
+   - **TODO()**: "I should have a specific context here, but I don't yet, and I intend to fix this later"
+
+   **Best practices:**
+
+   1. **Prefer explicit context passing** over creating new root contexts
+      ```go
+      // Better design: Pass context from caller
+      func processTask(ctx context.Context, task Task) error {
+          // Use passed context
+      }
+      
+      // Avoid creating new root contexts inside functions
+      func badProcessTask(task Task) error {
+          ctx := context.Background() // Don't do this inside functions
+          // ...
+      }
+      ```
+
+   2. **Use Background() for the main entry points** of your application
+      ```go
+      func main() {
+          ctx := context.Background()
+          // Create derived contexts with timeouts, cancellation, etc.
+      }
+      ```
+
+   3. **Use TODO() for temporary solutions** that will be fixed
+      ```go
+      // Mark clearly that this is temporary
+      // TODO: Refactor to accept context from caller
+      ctx := context.TODO()
+      ```
+
+   4. **Document why you're using TODO()** to make refactoring easier
+      ```go
+      // TODO: Replace with request context once we update the API
+      ctx := context.TODO()
+      ```
+
+   5. **Set up lint rules** to flag instances of `context.TODO()` in production code
+
+   In summary, use `context.Background()` when you explicitly need a new root context, and `context.TODO()` when you're temporarily filling a gap that should be addressed in future refactoring. In practice, you'll use `context.Background()` much more frequently in production code.
+
+2. **Q: How do I properly pass contexts through my application?**
+
+   A: Properly passing contexts through your application ensures effective cancellation signals, timeouts, and request-scoped values. Here's a comprehensive guide:
+
+   **Core principles for passing contexts:**
+
+   1. **Pass contexts explicitly as the first parameter**
+      ```go
+      func ProcessOrder(ctx context.Context, orderID string) error {
+          // Use context here
+      }
+      ```
+
+   2. **Never store contexts in structs** as a general field
+      ```go
+      // DON'T do this
+      type BadService struct {
+          ctx context.Context // Bad practice
+          // ...
+      }
+      
+      // DO this instead
+      type GoodService struct {
+          // No context as a field
+      }
+      
+      // Pass context in method calls
+      func (s *GoodService) Process(ctx context.Context, data Data) {
+          // ...
+      }
+      ```
+
+   3. **Pass contexts through all layers** of your application
+      ```go
+      // Controller layer
+      func (c *OrderController) CreateOrder(w http.ResponseWriter, r *http.Request) {
+          // Get context from request
+          ctx := r.Context()
+          
+          // Pass to service layer
+          order, err := c.orderService.CreateOrder(ctx, orderData)
+          // ...
+      }
+      
+      // Service layer
+      func (s *OrderService) CreateOrder(ctx context.Context, data OrderData) (*Order, error) {
+          // Pass to repository layer
+          return s.orderRepo.Create(ctx, data)
+      }
+      
+      // Repository layer
+      func (r *OrderRepository) Create(ctx context.Context, data OrderData) (*Order, error) {
+          // Use context for database operations
+          return r.db.ExecContext(ctx, "INSERT...", data.Fields...)
+      }
+      ```
+
+   **For HTTP servers:**
+
+   ```go
+   func handler(w http.ResponseWriter, r *http.Request) {
+       // Get context from the request
+       ctx := r.Context()
+       
+       // Add request-specific values if needed
+       ctx = context.WithValue(ctx, userIDKey, getUserID(r))
+       
+       // Create a timeout for this specific request
+       ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+       defer cancel()
+       
+       // Use the context in downstream operations
+       result, err := processRequest(ctx, r.URL.Query())
+       // ...
+   }
+   ```
+
+   **For long-running workers:**
+
+   ```go
+   func Worker(ctx context.Context) {
+       for {
+           select {
+           case <-ctx.Done():
+               // Context cancelled, exit worker
+               log.Printf("Worker exiting: %v", ctx.Err())
+               return
+               
+           case job := <-jobQueue:
+               // Create a child context for this job with timeout
+               jobCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+               
+               // Process the job with its own context
+               processJob(jobCtx, job)
+               
+               // Clean up this job's context
+               cancel()
+           }
+       }
+   }
+   ```
+
+   **Context hierarchy management:**
+
+   ```go
+   // Starting with an application context
+   appCtx, appCancel := context.WithCancel(context.Background())
+   defer appCancel()
+   
+   // Create a request context from app context
+   requestCtx, requestCancel := context.WithTimeout(appCtx, 10*time.Second)
+   defer requestCancel()
+   
+   // Create operation-specific context
+   operationCtx, operationCancel := context.WithTimeout(requestCtx, 2*time.Second)
+   defer operationCancel()
+   
+   // If parent contexts are cancelled, all children are also cancelled
+   // If operation times out, request can still continue with other operations
+   ```
+
+   **Handling context across API boundaries:**
+
+   ```go
+   // API Gateway pattern
+   func (g *Gateway) CallExternalService(ctx context.Context, req Request) (*Response, error) {
+       // Create a specific timeout for external call
+       callCtx, cancel := context.WithTimeout(ctx, g.callTimeout)
+       defer cancel()
+       
+       // Make the HTTP request with the derived context
+       httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, g.serviceURL, body)
+       if err != nil {
+           return nil, err
+       }
+       
+       // Add any required headers
+       for k, v := range g.headers {
+           httpReq.Header.Set(k, v)
+       }
+       
+       // Make the call
+       resp, err := g.client.Do(httpReq)
+       // ...
+   }
+   ```
+
+   **Context in asynchronous operations:**
+
+   ```go
+   func ProcessAsync(ctx context.Context, data Data) <-chan Result {
+       resultCh := make(chan Result, 1)
+       
+       go func() {
+           defer close(resultCh)
+           
+           // Use the same context for this goroutine
+           select {
+           case <-ctx.Done():
+               // Context cancelled before we even start
+               resultCh <- Result{Err: ctx.Err()}
+               return
+           default:
+               // Continue with processing
+           }
+           
+           // Do work that respects the context
+           result, err := doWork(ctx, data)
+           
+           // Send results, but respect context cancellation
+           select {
+           case resultCh <- Result{Value: result, Err: err}:
+               // Result sent successfully
+           case <-ctx.Done():
+               // Context cancelled, result no longer needed
+               return
+           }
+       }()
+       
+       return resultCh
+   }
+   ```
+
+   **Middleware approach for web servers:**
+
+   ```go
+   // Timeout middleware
+   func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
+       return func(next http.Handler) http.Handler {
+           return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+               // Get the existing context
+               ctx := r.Context()
+               
+               // Create a timeout context
+               ctx, cancel := context.WithTimeout(ctx, timeout)
+               defer cancel()
+               
+               // Create new request with the timeout context
+               r = r.WithContext(ctx)
+               
+               // Call the next handler
+               next.ServeHTTP(w, r)
+           })
+       }
+   }
+   
+   // Usage
+   http.Handle("/api/", TimeoutMiddleware(5*time.Second)(apiHandler))
+   ```
+
+   **Request tracing with context:**
+
+   ```go
+   // Define a key for the trace ID
+   type traceIDKey struct{}
+   
+   // Middleware to add trace ID
+   func TracingMiddleware(next http.Handler) http.Handler {
+       return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+           // Generate or get trace ID from request
+           traceID := r.Header.Get("X-Trace-ID")
+           if traceID == "" {
+               traceID = generateTraceID()
+           }
+           
+           // Add to context
+           ctx := context.WithValue(r.Context(), traceIDKey{}, traceID)
+           
+           // Add to response headers
+           w.Header().Set("X-Trace-ID", traceID)
+           
+           // Continue with modified context
+           next.ServeHTTP(w, r.WithContext(ctx))
+       })
+   }
+   
+   // Helper to extract trace ID
+   func GetTraceID(ctx context.Context) string {
+       if id, ok := ctx.Value(traceIDKey{}).(string); ok {
+           return id
+       }
+       return "unknown"
+   }
+   
+   // Usage in handlers and services
+   func processRequest(ctx context.Context) {
+       traceID := GetTraceID(ctx)
+       log.Printf("[Trace: %s] Processing request", traceID)
+       // ...
+   }
+   ```
+
+   **Best practices for context cancellation:**
+
+   ```go
+   // Parent function
+   func handleRequest(w http.ResponseWriter, r *http.Request) {
+       ctx := r.Context()
+       
+       // For operations that should have an independent timeout
+       ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+       defer cancel() // Always call cancel to avoid resource leaks
+       
+       // Call function with context
+       result, err := processOperation(ctx)
+       
+       // Cancel here instead if you want to stop early
+       // cancel()
+   }
+   ```
+
+   **Key takeaways:**
+
+   1. **Pass context as first argument** in all functions that do I/O or may be long-running
+   2. **Do not store context in structs** except in rare cases for request-scope objects
+   3. **Cancel contexts when operations complete** to free resources
+   4. **Create specific contexts with appropriate timeouts** for different operations
+   5. **Only store request-scoped values** in context, not general application configuration
+   6. **Document the expected contents** of your context values
+   7. **Use custom types for context keys** to avoid collisions
+
+   By consistently following these patterns, you'll ensure that cancellation signals, deadlines, and request-scoped values flow properly through your application, making it more robust and maintainable.
+
+3. **Q: How do I handle derived contexts and cancellation properly?**
+
+   A: Handling derived contexts and cancellation properly is essential for resource management and controlling the flow of concurrent operations. Here's a comprehensive guide:
+
+   **Understanding Context Hierarchies**
+
+   In Go, contexts form a tree-like hierarchy:
+   - When you derive a new context from a parent, the child inherits the cancellation signal, deadlines, and values from its parent
+   - Cancelling a parent context cancels all its derived children
+   - Cancelling a child context does not affect its parent or siblings
+
+   **Creating Derived Contexts**
+
+   There are four main ways to derive contexts:
+
+   1. **WithCancel**: Create a context that can be cancelled manually
+      ```go
+      childCtx, cancel := context.WithCancel(parentCtx)
+      defer cancel() // Always call cancel to avoid resource leaks
+      ```
+
+   2. **WithDeadline**: Create a context that will be cancelled at a specific time
+      ```go
+      deadline := time.Now().Add(5 * time.Minute)
+      childCtx, cancel := context.WithDeadline(parentCtx, deadline)
+      defer cancel() // Always call cancel to free resources early if completed before deadline
+      ```
+
+   3. **WithTimeout**: Create a context that will be cancelled after a duration
+      ```go
+      childCtx, cancel := context.WithTimeout(parentCtx, 30 * time.Second)
+      defer cancel() // Always call cancel, even if timeout occurs
+      ```
+
+   4. **WithValue**: Create a context with a key-value pair
+      ```go
+      childCtx := context.WithValue(parentCtx, userIDKey, "user-123")
+      // No cancel function, as WithValue doesn't set up a cancellation mechanism
+      ```
+
+   **Proper Cancellation Patterns**
+
+   **1. Always defer cancel() immediately after creating a cancellable context**
+
+   ```go
+   func processRequest(ctx context.Context, req Request) (*Response, error) {
+       // Create a timeout for this operation
+       ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+       defer cancel() // <-- Always defer immediately after creation
+       
+       // Rest of function...
+   }
+   ```
+
+   **2. Cancel explicitly when operation completes early**
+
+   ```go
+   func searchWithEarlyTermination(ctx context.Context, query string) ([]Result, error) {
+       ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+       defer cancel() // Ensures cleanup even in case of errors
+       
+       results := make([]Result, 0)
+       
+       for _, source := range dataSources {
+           result, err := searchSource(ctx, source, query)
+           if err != nil {
+               continue
+           }
+           
+           results = append(results, result...)
+           
+           // If we found enough results, cancel early to release resources
+           if len(results) >= 10 {
+               cancel() // Cancel explicitly for early termination
+               break
+           }
+       }
+       
+       return results, nil
+   }
+   ```
+
+   **3. Handling nested cancellation**
+
+   ```go
+   func processWithSubtasks(ctx context.Context, task Task) error {
+       // Create a context for the entire task
+       taskCtx, taskCancel := context.WithTimeout(ctx, 30*time.Second)
+       defer taskCancel()
+       
+       // Process each subtask with its own shorter timeout
+       for _, subtask := range task.Subtasks {
+           // Create a context specifically for this subtask
+           subtaskCtx, subtaskCancel := context.WithTimeout(taskCtx, 5*time.Second)
+           
+           // Process the subtask
+           err := processSubtask(subtaskCtx, subtask)
+           
+           // Always cancel the subtask context when done
+           subtaskCancel()
+           
+           if err != nil {
+               return err
+           }
+           
+           // Check if parent context was cancelled
+           if taskCtx.Err() != nil {
+               return taskCtx.Err()
+           }
+       }
+       
+       return nil
+   }
+   ```
+
+   **4. Controlling cancellation propagation**
+
+   Sometimes you want to prevent cancellation from propagating to certain operations, particularly cleanup:
+
+   ```go
+   func processWithCleanup(ctx context.Context, resource Resource) error {
+       // Use original context for the main operation
+       err := performOperation(ctx, resource)
+       
+       // Use a fresh context for cleanup to ensure it runs even if ctx is cancelled
+       cleanupCtx := context.Background()
+       timeoutCtx, cancel := context.WithTimeout(cleanupCtx, 5*time.Second)
+       defer cancel()
+       
+       // This cleanup will run regardless of whether the original context was cancelled
+       cleanupErr := resource.Cleanup(timeoutCtx)
+       
+       // Return the original error if there was one
+       if err != nil {
+           return err
+       }
+       
+       return cleanupErr
+   }
+   ```
+
+   **5. Checking cancellation properly**
+
+   ```go
+   func processItems(ctx context.Context, items []Item) error {
+       for i, item := range items {
+           // Check for cancellation before each iteration
+           if err := ctx.Err(); err != nil {
+               return fmt.Errorf("processing cancelled at item %d: %w", i, err)
+           }
+           
+           if err := processItem(ctx, item); err != nil {
+               return err
+           }
+       }
+       return nil
+   }
+   ```
+
+   **6. Select with context.Done() for cancellation**
+
+   ```go
+   func worker(ctx context.Context) {
+       for {
+           select {
+           case <-ctx.Done():
+               // Context cancelled, exit the goroutine
+               log.Printf("Worker exiting: %v", ctx.Err())
+               return
+               
+           case task := <-taskCh:
+               processTask(ctx, task)
+               
+           case <-time.After(idleTimeout):
+               // Idle timeout reached
+               log.Println("Worker idle timeout reached")
+               return
+           }
+       }
+   }
+   ```
+
+   **7. Handling multiple contexts**
+
+   Sometimes you need to respect multiple cancellation sources:
+
+   ```go
+   // Function to create a context that's cancelled when either input context is cancelled
+   func mergeContexts(ctx1, ctx2 context.Context) (context.Context, context.CancelFunc) {
+       ctx, cancel := context.WithCancel(context.Background())
+       
+       go func() {
+           select {
+           case <-ctx1.Done():
+               cancel()
+           case <-ctx2.Done():
+               cancel()
+           case <-ctx.Done():
+               // Our context was directly cancelled
+           }
+       }()
+       
+       return ctx, cancel
+   }
+   
+   // Usage
+   func processWithMultipleDeadlines(requestCtx, systemCtx context.Context, data Data) error {
+       // Create a context that's cancelled if either input context is cancelled
+       mergedCtx, cancel := mergeContexts(requestCtx, systemCtx)
+       defer cancel()
+       
+       return process(mergedCtx, data)
+   }
+   ```
+
+   **8. Handling timeouts and cancellation separately**
+
+   ```go
+   func operationWithDistinctCancellation(ctx context.Context) error {
+       // Set up a timeout for this operation
+       timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 5*time.Second)
+       defer timeoutCancel()
+       
+       // Create a channel for operation completion
+       done := make(chan struct{})
+       var opErr error
+       
+       // Run the operation in a goroutine
+       go func() {
+           defer close(done)
+           opErr = performActualOperation(timeoutCtx)
+       }()
+       
+       // Wait for completion, timeout, or cancellation
+       select {
+       case <-done:
+           // Operation completed
+           return opErr
+       case <-timeoutCtx.Done():
+           // Check if it was our timeout or parent cancellation
+           if ctx.Err() != nil {
+               return fmt.Errorf("operation cancelled by caller: %w", ctx.Err())
+           }
+           return fmt.Errorf("operation timed out after 5 seconds")
+       }
+   }
+   ```
+
+   **9. Graceful shutdown with context**
+
+   ```go
+   func main() {
+       // Create a background context
+       ctx, cancel := context.WithCancel(context.Background())
+       
+       // Start services
+       go startService1(ctx)
+       go startService2(ctx)
+       
+       // Wait for termination signal
+       sigCh := make(chan os.Signal, 1)
+       signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+       <-sigCh
+       
+       // Signal services to shut down
+       log.Println("Shutdown signal received, initiating graceful shutdown")
+       cancel() // This will propagate cancellation to all services
+       
+       // Allow time for graceful shutdown
+       time.Sleep(5 * time.Second)
+       log.Println("Shutdown complete")
+   }
+   ```
+
+   **10. Testing cancellation behavior**
+
+   ```go
+   func TestCancellation(t *testing.T) {
+       ctx, cancel := context.WithCancel(context.Background())
+       
+       // Start a function that respects cancellation
+       done := make(chan struct{})
+       go func() {
+           defer close(done)
+           err := functionUnderTest(ctx)
+           if err != ctx.Err() {
+               t.Errorf("Expected context error, got: %v", err)
+           }
+       }()
+       
+       // Cancel after a short time
+       time.Sleep(100 * time.Millisecond)
+       cancel()
+       
+       // Check if function exited correctly
+       select {
+       case <-done:
+           // Function exited as expected
+       case <-time.After(time.Second):
+           t.Fatal("Function did not respect cancellation")
+       }
+   }
+   ```
+
+   **Key Principles for Context Cancellation:**
+
+   1. **Call `cancel()` when you're done**, even if the context deadline has passed
+   2. **Defer cancel immediately after creation** to avoid resource leaks
+   3. **Check ctx.Err() periodically** in long-running operations
+   4. **Respect cancellation by returning quickly** when context is done
+   5. **Propagate context.Err()** when returning from a cancelled operation
+   6. **Cancel explicitly for early termination** when appropriate
+   7. **Create separate contexts for unrelated operations** to prevent unwanted cancellation propagation
+   8. **Use Background() for operations that should run to completion** regardless of caller cancellation
+
+   Following these patterns will ensure that your application properly handles cancellation signals, allowing for resource cleanup and graceful shutdown in concurrent operations.
+
+### 11. Rate Limiting
+
+**Concise Explanation:**
+Rate limiting is a technique to control the frequency of operations, such as API calls, resource access, or processing operations. In Go's concurrent programs, rate limiting helps manage load, prevent resource exhaustion, and comply with external API limits. Go provides several patterns for implementing rate limiting, including token bucket, leaky bucket, and time window counters, all of which can be implemented using goroutines, channels, and time management.
+
+**Where to Use:**
+- When calling external APIs with usage limits
+- To prevent overwhelming downstream services
+- For controlling resource usage in high-concurrency environments
+- To manage database query rates
+- When implementing public-facing APIs
+- To protect against denial of service attacks
+- For fair usage enforcement across multiple users
+- When processing high-volume data streams
+
+**Code Snippet:**
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "sync"
+    "time"
+)
+
+// RateLimiter provides rate limiting capabilities
+type RateLimiter interface {
+    Wait(ctx context.Context) error
+    TryAcquire() bool
+}
+
+// TokenBucket implements a token bucket rate limiter
+type TokenBucket struct {
+    tokens        chan struct{}
+    refillRate    time.Duration
+    bucketSize    int
+    mu            sync.Mutex
+    lastRefillTime time.Time
+}
+
+// NewTokenBucket creates a new token bucket rate limiter
+func NewTokenBucket(rate int, per time.Duration, bucketSize int) *TokenBucket {
+    // Calculate token refill interval
+    refillInterval := per / time.Duration(rate)
+    
+    // Create token bucket
+    tb := &TokenBucket{
+        tokens:        make(chan struct{}, bucketSize),
+        refillRate:    refillInterval,
+        bucketSize:    bucketSize,
+        lastRefillTime: time.Now(),
+    }
+    
+    // Initial fill
+    for i := 0; i < bucketSize; i++ {
+        tb.tokens <- struct{}{}
+    }
+    
+    // Start refill goroutine
+    go tb.refill()
+    
+    return tb
+}
+
+// refill periodically adds tokens to the bucket
+func (tb *TokenBucket) refill() {
+    ticker := time.NewTicker(tb.refillRate)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        tb.mu.Lock()
+        // Add token if bucket is not full
+        select {
+        case tb.tokens <- struct{}{}:
+            // Token added
+        default:
+            // Bucket is full
+        }
+        tb.mu.Unlock()
+    }
+}
+
+// Wait blocks until a token is available or the context is cancelled
+func (tb *TokenBucket) Wait(ctx context.Context) error {
+    select {
+    case <-tb.tokens:
+        // Token acquired
+        return nil
+    case <-ctx.Done():
+        // Context cancelled
+        return ctx.Err()
+    }
+}
+
+// TryAcquire tries to acquire a token without blocking
+func (tb *TokenBucket) TryAcquire() bool {
+    select {
+    case <-tb.tokens:
+        return true
+    default:
+        return false
+    }
+}
+
+// Example usage
+func main() {
+    // Create a rate limiter allowing 5 operations per second
+    limiter := NewTokenBucket(5, time.Second, 5)
+    
+    // Create a wait group to wait for all operations
+    var wg sync.WaitGroup
+    
+    // Launch 20 operations
+    for i := 0; i < 20; i++ {
+        wg.Add(1)
+        go func(id int) {
+            defer wg.Done()
+            
+            // Create context with timeout
+            ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+            defer cancel()
+            
+            // Wait for rate limiter
+            start := time.Now()
+            if err := limiter.Wait(ctx); err != nil {
+                log.Printf("Operation %d cancelled: %v", id, err)
+                return
+            }
+            
+            // Perform the operation
+            elapsed := time.Since(start)
+            log.Printf("Operation %d started after waiting %v", id, elapsed)
+            
+            // Simulate work
+            time.Sleep(100 * time.Millisecond)
+            log.Printf("Operation %d completed", id)
+        }(i)
+    }
+    
+    // Wait for all operations to complete
+    wg.Wait()
+    
+    // Example with non-blocking acquisition
+    for i := 0; i < 10; i++ {
+        if limiter.TryAcquire() {
+            fmt.Printf("Acquired token immediately for operation %d\n", i)
+        } else {
+            fmt.Printf("Could not acquire token for operation %d\n", i)
+        }
+    }
+}
+```
+
+**Real-World Example:**
+A rate-limited API client for interacting with an external service:
+
+```go
+package apiclient
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "sync"
+    "time"
+)
+
+// APIClient provides access to a remote API with rate limiting
+type APIClient struct {
+    client      *http.Client
+    baseURL     string
+    rateLimiter *RateLimiter
+    authToken   string
+}
+
+// RateLimiter manages rate limits for different endpoints
+type RateLimiter struct {
+    limits     map[string]*TokenBucket
+    globalRate *TokenBucket
+    mu         sync.RWMutex
+}
+
+// NewRateLimiter creates a new rate limiter
+func NewRateLimiter(globalRate int) *RateLimiter {
+    return &RateLimiter{
+        limits:     make(map[string]*TokenBucket),
+        globalRate: NewTokenBucket(globalRate, time.Second, globalRate),
+    }
+}
+
+// TokenBucket implements a token bucket algorithm
+type TokenBucket struct {
+    tokens     chan struct{}
+    ticker     *time.Ticker
+    quit       chan struct{}
+    bucketSize int
+    mu         sync.Mutex
+}
+
+// NewTokenBucket creates a token bucket that refills at the specified rate
+func NewTokenBucket(rate int, per time.Duration, bucketSize int) *TokenBucket {
+    refillInterval := per / time.Duration(rate)
+    tb := &TokenBucket{
+        tokens:     make(chan struct{}, bucketSize),
+        ticker:     time.NewTicker(refillInterval),
+        quit:       make(chan struct{}),
+        bucketSize: bucketSize,
+    }
+    
+    // Initial fill
+    for i := 0; i < bucketSize; i++ {
+        tb.tokens <- struct{}{}
+    }
+    
+    // Start refill process
+    go func() {
+        for {
+            select {
+            case <-tb.ticker.C:
+                tb.mu.Lock()
+                select {
+                case tb.tokens <- struct{}{}:
+                    // Token added
+                default:
+                    // Bucket is full
+                }
+                tb.mu.Unlock()
+            case <-tb.quit:
+                tb.ticker.Stop()
+                return
+            }
+        }
+    }()
+    
+    return tb
+}
+
+// Wait blocks until a token is available or context is cancelled
+func (tb *TokenBucket) Wait(ctx context.Context) error {
+    select {
+    case <-tb.tokens:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+// Close stops the token bucket
+func (tb *TokenBucket) Close() {
+    close(tb.quit)
+}
+
+// SetEndpointLimit sets a rate limit for a specific endpoint
+func (rl *RateLimiter) SetEndpointLimit(endpoint string, rate int) {
+    rl.mu.Lock()
+    defer rl.mu.Unlock()
+    
+    // Close existing limiter if present
+    if existing, ok := rl.limits[endpoint]; ok {
+        existing.Close()
+    }
+    
+    rl.limits[endpoint] = NewTokenBucket(rate, time.Second, rate)
+}
+
+// Wait respects both global and endpoint-specific rate limits
+func (rl *RateLimiter) Wait(ctx context.Context, endpoint string) error {
+    // First wait for global limit
+    if err := rl.globalRate.Wait(ctx); err != nil {
+        return err
+    }
+    
+    // Then check for endpoint-specific limit
+    rl.mu.RLock()
+    limiter, exists := rl.limits[endpoint]
+    rl.mu.RUnlock()
+    
+    if exists {
+        return limiter.Wait(ctx)
+    }
+    
+    return nil
+}
+
+// NewAPIClient creates a new API client with rate limiting
+func NewAPIClient(baseURL string, globalRateLimit int) *APIClient {
+    return &APIClient{
+        client:      &http.Client{Timeout: 10 * time.Second},
+        baseURL:     baseURL,
+        rateLimiter: NewRateLimiter(globalRateLimit),
+    }
+}
+
+// SetAuthToken sets the authentication token for API requests
+func (c *APIClient) SetAuthToken(token string) {
+    c.authToken = token
+}
+
+// SetEndpointLimit sets a rate limit for a specific API endpoint
+func (c *APIClient) SetEndpointLimit(endpoint string, ratePerSecond int) {
+    c.rateLimiter.SetEndpointLimit(endpoint, ratePerSecond)
+}
+
+// Get performs a rate-limited GET request
+func (c *APIClient) Get(ctx context.Context, endpoint string, result interface{}) error {
+    // Wait for rate limiter
+    if err := c.rateLimiter.Wait(ctx, endpoint); err != nil {
+        return fmt.Errorf("rate limiting: %w", err)
+    }
+    
+    // Create request
+    url := c.baseURL + endpoint
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    if err != nil {
+        return fmt.Errorf("creating request: %w", err)
+    }
+    
+    // Add headers
+    if c.authToken != "" {
+        req.Header.Set("Authorization", "Bearer "+c.authToken)
+    }
+    req.Header.Set("Accept", "application/json")
+    
+    // Perform request
+    resp, err := c.client.Do(req)
+    if err != nil {
+        return fmt.Errorf("executing request: %w", err)
+    }
+    defer resp.Body.Close()
+    
+    // Check status code
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        body, _ := io.ReadAll(resp.Body)
+        return fmt.Errorf("API error %d: %s", resp.StatusCode, body)
+    }
+    
+    // Parse response
+    if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+        return fmt.Errorf("parsing response: %w", err)
+    }
+    
+    return nil
+}
+
+// Example usage
+func Example() {
+    // Create client with global rate limit of 10 requests/second
+    client := NewAPIClient("https://api.example.com", 10)
+    
+    // Set endpoint-specific limits
+    client.SetEndpointLimit("/users", 5)    // 5 requests/second
+    client.SetEndpointLimit("/products", 2) // 2 requests/second
+    
+    // Set authentication
+    client.SetAuthToken("my-api-token")
+    
+    // Make concurrent API requests
+    var wg sync.WaitGroup
+    ctx := context.Background()
+    
+    // Function to fetch user data
+    fetchUser := func(id int) {
+        defer wg.Done()
+        
+        var user struct {
+            ID   int    `json:"id"`
+            Name string `json:"name"`
+        }
+        
+        endpoint := fmt.Sprintf("/users/%d", id)
+        err := client.Get(ctx, endpoint, &user)
+        if err != nil {
+            fmt.Printf("Error fetching user %d: %v\n", id, err)
+            return
+        }
+        
+        fmt.Printf("User %d: %s\n", user.ID, user.Name)
+    }
+    
+    // Start concurrent requests
+    for i := 1; i <= 20; i++ {
+        wg.Add(1)
+        go fetchUser(i)
+    }
+    
+    // Wait for all requests to complete
+    wg.Wait()
+}
+```
+
+**Common Pitfalls:**
+- Using static time delays instead of proper rate limiting
+- Creating a new limiter for each request, defeating the purpose
+- Not accounting for rate limits across multiple instances of an application
+- Forgetting to add timeouts, leading to blocked operations if rate limits are too restrictive
+- Neglecting to handle error cases when operations are rejected due to rate limits
+- Not considering different rate limits for different operations or users
+- Using overly complex rate limiting algorithms when simpler ones would suffice
+- Allocating rate limit tokens too slowly, causing excessive delays
+
+**Confusion Questions:**
+
+1. **Q: What's the difference between token bucket, leaky bucket, and fixed window rate limiting?**
+
+   A: Token bucket, leaky bucket, and fixed window are different rate limiting algorithms with distinct characteristics:
+
+   **Token Bucket:**
+   
+   ```go
+   // Token Bucket implementation
+   type TokenBucket struct {
+       tokens     chan struct{}
+       capacity   int
+       refillRate time.Duration
+   }
+   ```
+   
+   - **How it works**: Maintains a bucket of tokens that refills at a steady rate. Each operation consumes a token.
+   - **Characteristics**:
+     - Allows bursts up to the bucket capacity
+     - Smooths out long-term rate while permitting short bursts
+     - Tokens accumulate when not used (up to capacity)
+   - **Best for**: API clients with occasional bursts of activity
+   
+   **Leaky Bucket:**
+   
+   ```go
+   // Leaky Bucket implementation
+   type LeakyBucket struct {
+       queue      chan struct{}
+       processRate time.Duration
+       quit       chan struct{}
+   }
+   ```
+   
+   - **How it works**: Requests enter a queue with a fixed size, and are processed at a constant rate
+   - **Characteristics**:
+     - Enforces a constant outflow rate
+     - Buffers requests up to queue capacity
+     - No accumulation of unused capacity
+     - Excess requests are dropped when the bucket (queue) is full
+   - **Best for**: Traffic shaping and ensuring steady processing rates
+   
+   **Fixed Window:**
+   
+   ```go
+   // Fixed Window implementation
+   type FixedWindow struct {
+       mu         sync.Mutex
+       count      int
+       limit      int
+       windowSize time.Duration
+       lastReset  time.Time
+   }
+   ```
+   
+   - **How it works**: Counts events in fixed time windows (e.g., per minute)
+   - **Characteristics**:
+     - Simplest to implement
+     - Resets counter at the end of each window
+     - Can allow twice the rate at window boundaries (edge condition)
+     - No memory between windows
+   - **Best for**: Simple rate limiting scenarios with defined time periods
+   
+   **Sliding Window:**
+   
+   ```go
+   // Sliding Window implementation
+   type SlidingWindow struct {
+       mu         sync.Mutex
+       events     []time.Time
+       limit      int
+       windowSize time.Duration
+   }
+   ```
+   
+   - **How it works**: Tracks timestamps of events within a moving time window
+   - **Characteristics**:
+     - More accurate than fixed window
+     - Prevents boundary spike issues
+     - Higher memory usage as it tracks individual events
+     - Smoothly handles transitions between windows
+   - **Best for**: More precise rate limiting with gradual window transitions
+
+   **Practical decision guide:**
+
+   - For client-side API rate limiting where bursts are acceptable: **Token Bucket**
+   - For steady, predictable throughput with queue behavior: **Leaky Bucket**
+   - For server-side rate limiting with minimal overhead: **Fixed Window**
+   - For precise rate limiting without boundary issues: **Sliding Window**
+
+   The token bucket approach is often the most versatile and is widely used in Go applications because it balances good properties of both allowing short bursts while maintaining long-term rate constraints.
+
+2. **Q: How do I implement per-user or distributed rate limiting?**
+
+   A: Implementing per-user or distributed rate limiting requires additional techniques beyond a simple rate limiter. Here are approaches for both scenarios:
+
+   **Per-User Rate Limiting:**
+
+   For per-user rate limiting, create and manage separate rate limiters for each user:
+
+   ```go
+   type UserRateLimiter struct {
+       limiters   map[string]*TokenBucket // Key is user identifier
+       mu         sync.RWMutex
+       rate       int           // Default tokens per interval
+       interval   time.Duration // Default refill interval
+       bucketSize int           // Default bucket size
+   }
+
+   func NewUserRateLimiter(rate int, interval time.Duration, bucketSize int) *UserRateLimiter {
+       return &UserRateLimiter{
+           limiters:   make(map[string]*TokenBucket),
+           rate:       rate,
+           interval:   interval,
+           bucketSize: bucketSize,
+       }
+   }
+
+   // GetLimiter returns the rate limiter for a specific user
+   func (u *UserRateLimiter) GetLimiter(userID string) *TokenBucket {
+       u.mu.RLock()
+       limiter, exists := u.limiters[userID]
+       u.mu.RUnlock()
+
+       if exists {
+           return limiter
+       }
+
+       // Create new limiter for user with default settings
+       u.mu.Lock()
+       defer u.mu.Unlock()
+       
+       // Double-check after acquiring write lock
+       if limiter, exists = u.limiters[userID]; exists {
+           return limiter
+       }
+
+       // Create a new limiter
+       limiter = NewTokenBucket(u.rate, u.interval, u.bucketSize)
+       u.limiters[userID] = limiter
+       return limiter
+   }
+
+   // SetUserLimit sets custom limits for a specific user
+   func (u *UserRateLimiter) SetUserLimit(userID string, rate int, bucketSize int) {
+       u.mu.Lock()
+       defer u.mu.Unlock()
+
+       // Close existing limiter if present
+       if existingLimiter, ok := u.limiters[userID]; ok {
+           existingLimiter.Close()
+       }
+
+       // Create new limiter with custom settings
+       u.limiters[userID] = NewTokenBucket(rate, u.interval, bucketSize)
+   }
+
+   // Wait waits for a token for the specified user
+   func (u *UserRateLimiter) Wait(ctx context.Context, userID string) error {
+       limiter := u.GetLimiter(userID)
+       return limiter.Wait(ctx)
+   }
+   ```
+
+   **Distributed Rate Limiting:**
+
+   For distributed rate limiting across multiple application instances, you need a shared storage mechanism like Redis:
+
+   ```go
+   type DistributedRateLimiter struct {
+       redisClient *redis.Client
+       keyPrefix   string
+       window      time.Duration
+       limit       int
+   }
+
+   func NewDistributedRateLimiter(redisAddr, keyPrefix string, limit int, window time.Duration) (*DistributedRateLimiter, error) {
+       client := redis.NewClient(&redis.Options{
+           Addr: redisAddr,
+       })
+
+       // Check connection
+       if _, err := client.Ping().Result(); err != nil {
+           return nil, fmt.Errorf("redis connection error: %w", err)
+       }
+
+       return &DistributedRateLimiter{
+           redisClient: client,
+           keyPrefix:   keyPrefix,
+           window:      window,
+           limit:       limit,
+       }, nil
+   }
+
+   // Allow checks if a request is allowed and increments counter if so
+   func (d *DistributedRateLimiter) Allow(ctx context.Context, key string) (bool, error) {
+       // Create a full key with prefix
+       fullKey := fmt.Sprintf("%s:%s", d.keyPrefix, key)
+       
+       // Execute Redis script for atomic increment and check
+       // This Lua script:
+       // 1. Increments the counter for the key
+       // 2. Sets expiry time if it's a new key
+       // 3. Returns the current count
+       script := redis.NewScript(`
+           local current = redis.call("INCR", KEYS[1])
+           if current == 1 then
+               redis.call("EXPIRE", KEYS[1], ARGV[1])
+           end
+           return current
+       `)
+
+       // Convert window duration to seconds for Redis expiry
+       windowSeconds := int(d.window.Seconds())
+       
+       // Run the script
+       result, err := script.Run(ctx, d.redisClient, []string{fullKey}, windowSeconds).Int()
+       if err != nil {
+           return false, fmt.Errorf("redis script error: %w", err)
+       }
+
+       // Check if we're under the limit
+       return result <= d.limit, nil
+   }
+
+   // Wait blocks until a request is allowed or context is cancelled
+   func (d *DistributedRateLimiter) Wait(ctx context.Context, key string) error {
+       for {
+           allowed, err := d.Allow(ctx, key)
+           if err != nil {
+               return err
+           }
+           
+           if allowed {
+               return nil
+           }
+
+           // Not allowed, wait and retry
+           select {
+           case <-time.After(100 * time.Millisecond):
+               // Continue and retry
+           case <-ctx.Done():
+               return ctx.Err()
+           }
+       }
+   }
+   ```
+
+   **Combining both approaches:**
+
+   For a comprehensive rate limiting strategy in a distributed system with per-user limits:
+
+   ```go
+   type CompleteRateLimiter struct {
+       redis         *redis.Client
+       globalLimiter *DistributedRateLimiter
+       userLimiters  map[string]*DistributedRateLimiter
+       mu            sync.RWMutex
+   }
+
+   func NewCompleteRateLimiter(redisAddr string) (*CompleteRateLimiter, error) {
+       client := redis.NewClient(&redis.Options{Addr: redisAddr})
+       
+       // Create global limiter
+       globalLimiter, err := NewDistributedRateLimiter(
+           redisAddr,
+           "global",
+           1000,           // 1000 requests per minute globally
+           time.Minute,
+       )
+       if err != nil {
+           return nil, err
+       }
+       
+       return &CompleteRateLimiter{
+           redis:         client,
+           globalLimiter: globalLimiter,
+           userLimiters:  make(map[string]*DistributedRateLimiter),
+       }, nil
+   }
+
+   // GetUserLimiter returns or creates a rate limiter for a user
+   func (c *CompleteRateLimiter) GetUserLimiter(userID string) (*DistributedRateLimiter, error) {
+       c.mu.RLock()
+       limiter, exists := c.userLimiters[userID]
+       c.mu.RUnlock()
+       
+       if exists {
+           return limiter, nil
+       }
+       
+       // Create new limiter with default user settings
+       c.mu.Lock()
+       defer c.mu.Unlock()
+       
+       // Double-check after acquiring write lock
+       if limiter, exists = c.userLimiters[userID]; exists {
+           return limiter, nil
+       }
+       
+       var err error
+       limiter, err = NewDistributedRateLimiter(
+           c.redis.Options().Addr,
+           fmt.Sprintf("user:%s", userID),
+           60,            // Default 60 requests per minute per user
+           time.Minute,
+       )
+       if err != nil {
+           return nil, err
+       }
+       
+       c.userLimiters[userID] = limiter
+       return limiter, nil
+   }
+
+   // Wait respects both global and per-user rate limits
+   func (c *CompleteRateLimiter) Wait(ctx context.Context, userID string) error {
+       // First check global limit
+       if err := c.globalLimiter.Wait(ctx, "requests"); err != nil {
+           return err
+       }
+       
+       // Then check user-specific limit
+       userLimiter, err := c.GetUserLimiter(userID)
+       if err != nil {
+           return err
+       }
+       
+       return userLimiter.Wait(ctx, "requests")
+   }
+   ```
+
+   **Key principles for distributed/per-user rate limiting:**
+
+   1. **Use centralized storage** (like Redis) for distributed state
+   2. **Implement atomic operations** to avoid race conditions in counters
+   3. **Add sliding window or decay** for more accurate limits
+   4. **Consider performance impact** of network calls for each rate limit check
+   5. **Implement fallback mechanisms** in case the rate limiting service fails
+   6. **Cache results briefly** when possible to reduce storage load
+   7. **Ensure consistent time** across distributed system nodes 
+   8. **Provide feedback to users** about their rate limit status (headers, etc.)
+
+   These approaches provide scalable ways to limit API usage per user while maintaining global limits across a distributed system.
+
+3. **Q: How do I handle rate limiting failures gracefully in a client application?**
+
+   A: Handling rate limiting failures gracefully in client applications requires a comprehensive strategy including retries, backoff, circuit breaking, and user feedback. Here's how to implement these techniques:
+
+   **1. Detecting Rate Limit Responses**
+
+   First, properly identify when rate limiting is occurring:
+
+   ```go
+   func isRateLimited(resp *http.Response, err error) bool {
+       // Check for explicit rate limit status codes
+       if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 503) {
+           return true
+       }
+       
+       // Check error types that might indicate rate limiting
+       var netErr net.Error
+       if errors.As(err, &netErr) && netErr.Timeout() {
+           return true
+       }
+       
+       // Check for specific API error responses
+       if resp != nil && resp.StatusCode == 200 {
+           // Some APIs return 200 with error in body
+           var apiResp struct {
+               Error struct {
+                   Code    string `json:"code"`
+                   Message string `json:"message"`
+               } `json:"error"`
+           }
+           
+           if err := json.NewDecoder(resp.Body).Decode(&apiResp); err == nil {
+               return apiResp.Error.Code == "RATE_LIMITED"
+           }
+           
+           // Reset the body for further processing
+           resp.Body.Close()
+           // Re-create the body (simplified, would need proper implementation)
+       }
+       
+       return false
+   }
+   ```
+
+   **2. Exponential Backoff with Jitter**
+
+   Implement smart retry logic that backs off exponentially and adds jitter to prevent thundering herd problems:
+
+   ```go
+   func retryWithBackoff(ctx context.Context, fn func() (*http.Response, error)) (*http.Response, error) {
+       var resp *http.Response
+       var err error
+       
+       maxRetries := 5
+       initialBackoff := 100 * time.Millisecond
+       maxBackoff := 10 * time.Second
+       
+       for attempt := 0; attempt <= maxRetries; attempt++ {
+           resp, err = fn()
+           
+           // If not rate limited or final attempt, return result
+           if !isRateLimited(resp, err) || attempt == maxRetries {
+               return resp, err
+           }
+           
+           // Calculate backoff duration with exponential increase
+           backoff := initialBackoff * time.Duration(1<<attempt) // 2^attempt
+           if backoff > maxBackoff {
+               backoff = maxBackoff
+           }
+           
+           // Add jitter (random variance) to prevent synchronized retries
+           jitter := time.Duration(rand.Int63n(int64(backoff) / 2))
+           backoff = backoff/2 + jitter
+           
+           // Extract retry-after header if present
+           if resp != nil && resp.Header.Get("Retry-After") != "" {
+               if retryAfter, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil {
+                   backoff = time.Duration(retryAfter) * time.Second
+               }
+           }
+           
+           // Log the retry attempt
+           log.Printf("Rate limited. Retrying in %v (attempt %d/%d)", backoff, attempt+1, maxRetries)
+           
+           // Wait for backoff duration or context cancellation
+           select {
+           case <-time.After(backoff):
+               // Continue with retry
+           case <-ctx.Done():
+               return nil, ctx.Err()
+           }
+       }
+       
+       return resp, err
+   }
+   ```
+
+   **3. Circuit Breaker Pattern**
+
+   Implement a circuit breaker to prevent repeated failures when an API is consistently rate limiting:
+
+   ```go
+   type CircuitBreaker struct {
+       mu                  sync.Mutex
+       state               string // "closed", "open", "half-open"
+       failureThreshold    int
+       failureCount        int
+       resetTimeout        time.Duration
+       lastStateChangeTime time.Time
+   }
+
+   func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) *CircuitBreaker {
+       return &CircuitBreaker{
+           state:            "closed",
+           failureThreshold: failureThreshold,
+           resetTimeout:     resetTimeout,
+       }
+   }
+
+   // Execute runs the given function if the circuit breaker allows it
+   func (cb *CircuitBreaker) Execute(fn func() error) error {
+       cb.mu.Lock()
+       state := cb.state
+       
+       // If circuit is open but enough time has passed, try half-open
+       if state == "open" && time.Since(cb.lastStateChangeTime) > cb.resetTimeout {
+           state = "half-open"
+           cb.state = "half-open"
+           cb.lastStateChangeTime = time.Now()
+       }
+       cb.mu.Unlock()
+       
+       if state == "open" {
+           return fmt.Errorf("circuit breaker is open")
+       }
+       
+       // Execute the function
+       err := fn()
+       
+       cb.mu.Lock()
+       defer cb.mu.Unlock()
+       
+       if err != nil && isRateLimited(nil, err) {
+           // Function failed with rate limiting
+           if state == "half-open" {
+               // Return to open state on failure during half-open
+               cb.state = "open"
+               cb.lastStateChangeTime = time.Now()
+           } else {
+               // Increment failure counter in closed state
+               cb.failureCount++
+               if cb.failureCount >= cb.failureThreshold {
+                   cb.state = "open"
+                   cb.lastStateChangeTime = time.Now()
+               }
+           }
+           return err
+       }
+       
+       // Success, reset circuit breaker
+       if state == "half-open" {
+           cb.state = "closed"
+           cb.lastStateChangeTime = time.Now()
+       }
+       cb.failureCount = 0
+       
+       return err
+   }
+   ```
+
+   **4. Request Queuing/Batching**
+
+   Queue requests during rate limited periods and process them when allowed:
+
+   ```go
+   type RequestQueue struct {
+       queue      chan Request
+       processing bool
+       rateLimiter *TokenBucket
+       mu         sync.Mutex
+   }
+
+   type Request struct {
+       Fn       func() error
+       ResultCh chan error
+   }
+
+   func NewRequestQueue(rateLimiter *TokenBucket) *RequestQueue {
+       rq := &RequestQueue{
+           queue:       make(chan Request, 100), // Queue size
+           rateLimiter: rateLimiter,
+       }
+       
+       go rq.processor()
+       return rq
+   }
+
+   func (rq *RequestQueue) processor() {
+       for req := range rq.queue {
+           // Wait for rate limiter with reasonable timeout
+           ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+           err := rq.rateLimiter.Wait(ctx)
+           cancel()
+           
+           if err != nil {
+               req.ResultCh <- fmt.Errorf("rate limiting timeout: %w", err)
+               continue
+           }
+           
+           // Execute the request
+           err = req.Fn()
+           req.ResultCh <- err
+       }
+   }
+
+   // Enqueue adds a request to the queue
+   func (rq *RequestQueue) Enqueue(fn func() error) chan error {
+       resultCh := make(chan error, 1)
+       
+       // Try to add to queue, non-blocking
+       select {
+       case rq.queue <- Request{Fn: fn, ResultCh: resultCh}:
+           // Added to queue
+       default:
+           // Queue is full
+           resultCh <- errors.New("request queue is full")
+       }
+       
+       return resultCh
+   }
+   ```
+
+   **5. Complete API Client with Rate Limit Handling**
+
+   A comprehensive client that combines all these techniques:
+
+   ```go
+   type ResilientClient struct {
+       client       *http.Client
+       baseURL      string
+       rateLimiter  *TokenBucket
+       circuitBreaker *CircuitBreaker
+       requestQueue *RequestQueue
+   }
+
+   func NewResilientClient(baseURL string, ratePerSecond int) *ResilientClient {
+       limiter := NewTokenBucket(ratePerSecond, time.Second, ratePerSecond)
+       
+       rc := &ResilientClient{
+           client:        &http.Client{Timeout: 10 * time.Second},
+           baseURL:       baseURL,
+           rateLimiter:   limiter,
+           circuitBreaker: NewCircuitBreaker(5, 30*time.Second),
+       }
+       
+       rc.requestQueue = NewRequestQueue(limiter)
+       return rc
+   }
+
+   // Get performs a GET request with full resiliency features
+   func (rc *ResilientClient) Get(ctx context.Context, path string, result interface{}) error {
+       // Create the request function
+       requestFn := func() error {
+           return rc.circuitBreaker.Execute(func() error {
+               var resp *http.Response
+               var err error
+               
+               // Use retryWithBackoff
+               resp, err = retryWithBackoff(ctx, func() (*http.Response, error) {
+                   // Create request
+                   req, err := http.NewRequestWithContext(ctx, "GET", rc.baseURL+path, nil)
+                   if err != nil {
+                       return nil, err
+                   }
+                   
+                   // Execute request
+                   return rc.client.Do(req)
+               })
+               
+               if err != nil {
+                   return err
+               }
+               defer resp.Body.Close()
+               
+               // Check status
+               if resp.StatusCode >= 400 {
+                   body, _ := io.ReadAll(resp.Body)
+                   return fmt.Errorf("API error %d: %s", resp.StatusCode, body)
+               }
+               
+               // Parse response
+               return json.NewDecoder(resp.Body).Decode(result)
+           })
+       }
+       
+       // Choose execution strategy based on urgency
+       urgent := ctx.Value("urgent") != nil
+       
+       if urgent {
+           // For urgent requests, try to execute immediately
+           if rc.rateLimiter.TryAcquire() {
+               return requestFn()
+           }
+       }
+       
+       // Queue the request
+       resultCh := rc.requestQueue.Enqueue(requestFn)
+       
+       // Wait for result or context cancellation
+       select {
+       case err := <-resultCh:
+           return err
+       case <-ctx.Done():
+           return ctx.Err()
+       }
+   }
+   ```
+
+   **Key techniques for graceful rate limit handling:**
+
+   1. **Proper identification** of rate limit responses
+   2. **Smart retry logic** with exponential backoff and jitter
+   3. **Circuit breaking** to prevent cascading failures
+   4. **Request queuing** to smooth out traffic spikes
+   5. **Priority handling** for different request types
+   6. **Resource pooling** to maximize utilization within limits
+   7. **Monitoring and alerting** for persistent rate limit issues
+   8. **User feedback** about rate limiting status
+
+   By implementing these techniques, your client application can handle rate limiting gracefully, providing the best possible experience while respecting API limits.
+
+### 12. Generators and Iterators
+
+**Concise Explanation:**
+Generators and iterators in Go are patterns for lazily producing sequences of values. Unlike languages with native generator functions, Go implements this pattern using goroutines and channels to create pipelines that produce values on demand. This approach allows for efficient memory usage when processing large data sets, as values are generated only when needed rather than all at once. Generators produce values and send them to a channel, while iterators consume these values, creating a clean separation between data production and consumption.
+
+**Where to Use:**
+- For processing large data sets without loading everything into memory
+- When generating infinite sequences or streams of data
+- For implementing lazy evaluation of computation-heavy operations
+- In data processing pipelines that transform sequences step by step
+- When reading records from databases or files that are too large for memory
+- For implementing custom iteration patterns over complex data structures
+- When simulating streams of events (like user actions or sensor readings)
+- For testing systems with sequences of generated input values
 
 **Code Snippet:**
 ```go
@@ -9345,381 +12035,2386 @@ import (
     "time"
 )
 
-// Basic context usage with cancellation and timeout
-func main() {
-    // Example 1: Simple cancellation
-    fmt.Println("Example 1: Simple cancellation")
-    simpleCancellation()
+// Generator creates a channel that produces values
+func Generator(ctx context.Context, values ...int) <-chan int {
+    out := make(chan int)
     
-    // Example 2: Timeout context
-    fmt.Println("\nExample 2: Context with timeout")
-    contextWithTimeout()
+    go func() {
+        defer close(out)
+        
+        for _, v := range values {
+            select {
+            case <-ctx.Done():
+                return
+            case out <- v:
+                // Value sent
+            }
+        }
+    }()
     
-    // Example 3: Context with values
-    fmt.Println("\nExample 3: Context with values")
-    contextWithValues()
-    
-    // Example 4: Propagating cancellation
-    fmt.Println("\nExample 4: Propagating cancellation")
-    propagatingCancellation()
+    return out
 }
 
-// Example 1: Simple cancellation
-func simpleCancellation() {
-    // Create a cancellable context
-    ctx, cancel := context.WithCancel(context.Background())
+// RangeGenerator creates a channel that produces a range of integers
+func RangeGenerator(ctx context.Context, start, end int) <-chan int {
+    out := make(chan int)
     
-    // Start a goroutine that uses the context
     go func() {
+        defer close(out)
+        
+        for i := start; i < end; i++ {
+            select {
+            case <-ctx.Done():
+                return
+            case out <- i:
+                // Value sent
+            }
+        }
+    }()
+    
+    return out
+}
+
+// InfiniteGenerator creates a channel that produces an infinite sequence
+func InfiniteGenerator(ctx context.Context) <-chan int {
+    out := make(chan int)
+    
+    go func() {
+        defer close(out)
+        
+        i := 0
         for {
             select {
             case <-ctx.Done():
-                fmt.Println("Goroutine: Cancellation received, stopping")
                 return
-            default:
-                fmt.Println("Goroutine: Working...")
-                time.Sleep(500 * time.Millisecond)
+            case out <- i:
+                i++
             }
         }
     }()
     
-    // Let the goroutine run for a while
-    time.Sleep(2 * time.Second)
-    
-    // Cancel the context
-    fmt.Println("Main: Cancelling context")
-    cancel()
-    
-    // Wait to see the goroutine stop
-    time.Sleep(1 * time.Second)
+    return out
 }
 
-// Example 2: Context with timeout
-func contextWithTimeout() {
-    // Create a context with a 2-second timeout
-    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-    defer cancel() // Always call cancel, even if the timeout expires
+// RandomGenerator creates a channel that produces random integers
+func RandomGenerator(ctx context.Context, min, max int) <-chan int {
+    out := make(chan int)
     
-    // Start a task that might take too long
-    result := make(chan int, 1)
     go func() {
-        // Simulate work
-        fmt.Println("Task: Starting work...")
-        workTime := 3 * time.Second // This takes longer than the timeout
+        defer close(out)
         
-        // Check for cancellation during work
-        select {
-        case <-time.After(workTime):
-            result <- 42
-            fmt.Println("Task: Work completed (but too late)")
-        case <-ctx.Done():
-            fmt.Printf("Task: Work cancelled due to: %v\n", ctx.Err())
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case out <- min + rand.Intn(max-min+1):
+                // Random value sent
+            }
         }
     }()
     
-    // Wait for result or timeout
-    select {
-    case res := <-result:
-        fmt.Printf("Main: Got result: %d\n", res)
-    case <-ctx.Done():
-        fmt.Printf("Main: Operation timed out or cancelled: %v\n", ctx.Err())
-    }
+    return out
 }
 
-// Example 3: Context with values
-func contextWithValues() {
-    // Create a context with values
-    ctx := context.Background()
-    ctx = context.WithValue(ctx, "user_id", 42)
-    ctx = context.WithValue(ctx, "auth_token", "secret-token")
+// Take creates a channel that takes n items from a source channel
+func Take(ctx context.Context, src <-chan int, n int) <-chan int {
+    out := make(chan int)
     
-    // Pass the context to another function
-    processRequestWithContext(ctx)
-}
-
-func processRequestWithContext(ctx context.Context) {
-    // Extract values from context
-    userID, ok := ctx.Value("user_id").(int)
-    if !ok {
-        fmt.Println("User ID not found or not an integer")
-        return
-    }
-    
-    token, ok := ctx.Value("auth_token").(string)
-    if !ok {
-        fmt.Println("Auth token not found or not a string")
-        return
-    }
-    
-    fmt.Printf("Processing request for user %d with token: %s\n", userID, token)
-    
-    // Use context in a nested function
-    performAuthenticatedOperation(ctx)
-}
-
-func performAuthenticatedOperation(ctx context.Context) {
-    // Still have access to the same values
-    userID, _ := ctx.Value("user_id").(int)
-    fmt.Printf("Performing operation for user %d\n", userID)
-    
-    // We can also check for cancellation
-    select {
-    case <-ctx.Done():
-        fmt.Printf("Operation cancelled: %v\n", ctx.Err())
-        return
-    default:
-        // Continue with the operation
-    }
-}
-
-// Example 4: Propagating cancellation
-func propagatingCancellation() {
-    // Parent context with cancellation
-    parentCtx, parentCancel := context.WithCancel(context.Background())
-    defer parentCancel()
-    
-    // Start multiple worker goroutines
-    var wg sync.WaitGroup
-    
-    for i := 1; i <= 3; i++ {
-        wg.Add(1)
+    go func() {
+        defer close(out)
         
-        // Create child context for each worker
-        workerCtx, workerCancel := context.WithCancel(parentCtx)
+        for i := 0; i < n; i++ {
+            select {
+            case <-ctx.Done():
+                return
+            case v, ok := <-src:
+                if !ok {
+                    return // Source channel is closed
+                }
+                out <- v
+            }
+        }
+    }()
+    
+    return out
+}
+
+// Map applies a function to each value from a source channel
+func Map(ctx context.Context, src <-chan int, fn func(int) int) <-chan int {
+    out := make(chan int)
+    
+    go func() {
+        defer close(out)
         
-        go func(id int, ctx context.Context, cancel context.CancelFunc) {
-            defer wg.Done()
-            defer cancel() // Ensure child context is cancelled when goroutine exits
-            
-            // Worker processing loop
-            for {
+        for v := range src {
+            select {
+            case <-ctx.Done():
+                return
+            case out <- fn(v):
+                // Transformed value sent
+            }
+        }
+    }()
+    
+    return out
+}
+
+// Filter creates a channel with values that satisfy a predicate
+func Filter(ctx context.Context, src <-chan int, fn func(int) bool) <-chan int {
+    out := make(chan int)
+    
+    go func() {
+        defer close(out)
+        
+        for v := range src {
+            if fn(v) {
                 select {
                 case <-ctx.Done():
-                    fmt.Printf("Worker %d: Stopping due to: %v\n", id, ctx.Err())
                     return
-                default:
-                    // Simulate work
-                    fmt.Printf("Worker %d: Working...\n", id)
-                    
-                    // Randomly fail sometimes
-                    if rand.Intn(10) > 7 {
-                        fmt.Printf("Worker %d: Encountered an error, cancelling my context\n", id)
-                        cancel() // This worker's cancellation doesn't affect parent
-                        return
-                    }
-                    
-                    time.Sleep(500 * time.Millisecond)
+                case out <- v:
+                    // Filtered value sent
                 }
             }
-        }(i, workerCtx, workerCancel)
+        }
+    }()
+    
+    return out
+}
+
+// Reduce applies a function cumulatively to all values from a source
+func Reduce(ctx context.Context, src <-chan int, initial int, fn func(int, int) int) <-chan int {
+    out := make(chan int, 1) // Buffer to ensure value is sent even if receiver is slow
+    
+    go func() {
+        defer close(out)
+        
+        result := initial
+        for v := range src {
+            result = fn(result, v)
+        }
+        
+        select {
+        case <-ctx.Done():
+            return
+        case out <- result:
+            // Final result sent
+        }
+    }()
+    
+    return out
+}
+
+// Iterator wraps a channel to provide Next/Value operations
+type Iterator struct {
+    ch      <-chan int
+    current int
+    valid   bool
+    mu      sync.RWMutex
+}
+
+// NewIterator creates an iterator from a channel
+func NewIterator(ch <-chan int) *Iterator {
+    return &Iterator{
+        ch:    ch,
+        valid: false,
+    }
+}
+
+// Next advances the iterator to the next value
+func (it *Iterator) Next() bool {
+    it.mu.Lock()
+    defer it.mu.Unlock()
+    
+    value, ok := <-it.ch
+    if !ok {
+        it.valid = false
+        return false
     }
     
-    // Let workers run for a bit
-    time.Sleep(2 * time.Second)
+    it.current = value
+    it.valid = true
+    return true
+}
+
+// Value returns the current value
+func (it *Iterator) Value() (int, bool) {
+    it.mu.RLock()
+    defer it.mu.RUnlock()
     
-    // Cancel parent context, which will cascade to all children
-    fmt.Println("Main: Cancelling parent context")
-    parentCancel()
+    return it.current, it.valid
+}
+
+func main() {
+    // Create a context for cancellation
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
     
-    // Wait for all workers to finish
-    wg.Wait()
-    fmt.Println("All workers have stopped")
+    // Example 1: Simple generator and iteration
+    fmt.Println("Example 1: Generator with specific values")
+    gen := Generator(ctx, 1, 2, 3, 4, 5)
+    
+    for v := range gen {
+        fmt.Printf("%d ", v)
+    }
+    fmt.Println()
+    
+    // Example 2: Range generator
+    fmt.Println("\nExample 2: Range generator")
+    rangeGen := RangeGenerator(ctx, 10, 15)
+    
+    for v := range rangeGen {
+        fmt.Printf("%d ", v)
+    }
+    fmt.Println()
+    
+    // Example 3: Infinite generator with Take
+    fmt.Println("\nExample 3: Infinite generator with Take")
+    infiniteGen := InfiniteGenerator(ctx)
+    limitedGen := Take(ctx, infiniteGen, 5)
+    
+    for v := range limitedGen {
+        fmt.Printf("%d ", v)
+    }
+    fmt.Println()
+    
+    // Example 4: Transformation pipeline
+    fmt.Println("\nExample 4: Data pipeline with Map and Filter")
+    // Generate numbers -> Map (double them) -> Filter (only even) -> Take first 5
+    pipeline := Take(
+        ctx,
+        Filter(
+            ctx,
+            Map(
+                ctx,
+                InfiniteGenerator(ctx),
+                func(x int) int { return x * 2 },
+            ),
+            func(x int) bool { return x%4 == 0 },
+        ),
+        5,
+    )
+    
+    for v := range pipeline {
+        fmt.Printf("%d ", v)
+    }
+    fmt.Println()
+    
+    // Example 5: Random generator with reducer
+    fmt.Println("\nExample 5: Random numbers with sum reducer")
+    randGen := RandomGenerator(ctx, 1, 10)
+    limitedRand := Take(ctx, randGen, 5)
+    
+    fmt.Print("Random values: ")
+    nums := []int{}
+    for v := range limitedRand {
+        fmt.Printf("%d ", v)
+        nums = append(nums, v)
+    }
+    fmt.Println()
+    
+    // Sum them using a new generator and reducer
+    sumCh := Reduce(
+        ctx,
+        Generator(ctx, nums...),
+        0,
+        func(acc, val int) int { return acc + val },
+    )
+    
+    sum := <-sumCh
+    fmt.Printf("Sum: %d\n", sum)
+    
+    // Example 6: Using iterator interface
+    fmt.Println("\nExample 6: Iterator interface")
+    rangeGen2 := RangeGenerator(ctx, 100, 105)
+    iter := NewIterator(rangeGen2)
+    
+    for iter.Next() {
+        val, _ := iter.Value()
+        fmt.Printf("%d ", val)
+    }
+    fmt.Println()
 }
 ```
 
 **Real-World Example:**
-A concurrent file processing service with context-aware operations:
+A file processing system that reads and processes large files line by line:
 
 ```go
 package main
 
 import (
+    "bufio"
+    "compress/gzip"
     "context"
+    "encoding/csv"
+    "encoding/json"
     "fmt"
     "io"
-    "log"
     "os"
     "path/filepath"
+    "strings"
     "sync"
     "time"
 )
 
-// FileProcessor handles concurrent file processing operations
-type FileProcessor struct {
-    concurrency int
-    timeout     time.Duration
-    logger      *log.Logger
+// LogEntry represents a parsed log entry
+type LogEntry struct {
+    Timestamp time.Time          `json:"timestamp"`
+    Level     string             `json:"level"`
+    Message   string             `json:"message"`
+    Metadata  map[string]interface{} `json:"metadata"`
+    Raw       string             `json:"raw"`
 }
 
-// ProcessingResult contains the outcome of file processing
-type ProcessingResult struct {
-    FilePath  string
-    Success   bool
-    BytesRead int64
-    Error     error
-    Duration  time.Duration
+// Stats contains aggregated statistics from logs
+type Stats struct {
+    TotalEntries int            `json:"total_entries"`
+    ErrorCount   int            `json:"error_count"`
+    WarnCount    int            `json:"warn_count"`
+    InfoCount    int            `json:"info_count"`
+    DebugCount   int            `json:"debug_count"`
+    TopErrors    []string       `json:"top_errors"`
+    TimeRange    [2]time.Time   `json:"time_range"`
 }
 
-// NewFileProcessor creates a new file processor
-func NewFileProcessor(concurrency int, timeout time.Duration) *FileProcessor {
-    return &FileProcessor{
-        concurrency: concurrency,
-        timeout:     timeout,
-        logger:      log.New(os.Stdout, "[FileProcessor] ", log.LstdFlags),
-    }
-}
-
-// ProcessDirectory processes all files in a directory and its subdirectories
-func (fp *FileProcessor) ProcessDirectory(root string, processor func(string) error) error {
-    // Create a context with timeout
-    ctx, cancel := context.WithTimeout(context.Background(), fp.timeout)
-    defer cancel()
-
-    // Create channels
-    fileCh := make(chan string, 100)
-    errorCh := make(chan error, fp.concurrency)
-    doneCh := make(chan struct{})
-
-    // Start a goroutine to walk the directory
+// FileScanner is a generator that finds files matching a pattern
+func FileScanner(ctx context.Context, root string, pattern string) <-chan string {
+    out := make(chan string)
+    
     go func() {
-        defer close(fileCh)
+        defer close(out)
+        
+        // Walk the directory tree
         err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
             if err != nil {
                 return err
             }
-
+            
+            // Check for cancellation
+            select {
+            case <-ctx.Done():
+                return ctx.Err()
+            default:
+                // Continue
+            }
+            
             // Skip directories
             if info.IsDir() {
                 return nil
             }
-
-            select {
-            case fileCh <- path:
-                // File path sent successfully
-            case <-ctx.Done():
-                // Context cancelled
-                return ctx.Err()
+            
+            // Check if file matches pattern
+            matched, err := filepath.Match(pattern, filepath.Base(path))
+            if err != nil {
+                return err
             }
-
-            return nil
-        })
-
-        if err != nil {
-            select {
-            case errorCh <- fmt.Errorf("error walking directory: %w", err):
-            default:
-                // Error channel full or closed
-                fp.logger.Printf("Error walking directory: %v", err)
-            }
-        }
-    }()
-
-    // Start worker pool
-    var wg sync.WaitGroup
-    for i := 0; i < fp.concurrency; i++ {
-        wg.Add(1)
-        go func(workerID int) {
-            defer wg.Done()
-
-            for path := range fileCh {
-                // Check if context is cancelled
+            
+            if matched {
+                // Send matching file path
                 select {
+                case out <- path:
+                    // File path sent
                 case <-ctx.Done():
-                    return
-                default:
-                    // Continue processing
-                }
-
-                fp.logger.Printf("Worker %d processing file: %s", workerID, path)
-                if err := processor(path); err != nil {
-                    select {
-                    case errorCh <- fmt.Errorf("error processing %s: %w", path, err):
-                        // Error sent
-                    default:
-                        // Error channel full or closed
-                        fp.logger.Printf("Error processing %s: %v", path, err)
-                    }
+                    return ctx.Err()
                 }
             }
             
-            fp.logger.Printf("Worker %d finished", workerID)
-        }(i)
-    }
-
-    // Close error channel when all workers are done
-    go func() {
-        wg.Wait()
-        close(errorCh)
-        close(doneCh)
+            return nil
+        })
+        
+        if err != nil && err != ctx.Err() {
+            fmt.Fprintf(os.Stderr, "Error scanning files: %v\n", err)
+        }
     }()
+    
+    return out
+}
 
-    // Wait for completion or errors
-    var errors []error
+// LineReader is a generator that reads lines from a file
+func LineReader(ctx context.Context, filePath string) <-chan string {
+    out := make(chan string)
+    
+    go func() {
+        defer close(out)
+        
+        // Open the file
+        file, err := os.Open(filePath)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", filePath, err)
+            return
+        }
+        defer file.Close()
+        
+        // Create appropriate reader based on file extension
+        var reader io.Reader = file
+        
+        // Handle gzip files
+        if strings.HasSuffix(filePath, ".gz") {
+            gzReader, err := gzip.NewReader(file)
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "Error creating gzip reader for %s: %v\n", filePath, err)
+                return
+            }
+            defer gzReader.Close()
+            reader = gzReader
+        }
+        
+        // Create buffered reader
+        scanner := bufio.NewScanner(reader)
+        
+        // Read line by line
+        for scanner.Scan() {
+            line := scanner.Text()
+            
+            // Send the line
+            select {
+            case out <- line:
+                // Line sent
+            case <-ctx.Done():
+                return
+            }
+        }
+        
+        if err := scanner.Err(); err != nil {
+            fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", filePath, err)
+        }
+    }()
+    
+    return out
+}
 
-    for {
-        select {
-        case err, ok := <-errorCh:
-            if !ok {
-                // Error channel closed
-                errorCh = nil
+// CSVReader is a generator that parses CSV files
+func CSVReader(ctx context.Context, filePath string, hasHeader bool) <-chan []string {
+    out := make(chan []string)
+    
+    go func() {
+        defer close(out)
+        
+        // Open the file
+        file, err := os.Open(filePath)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", filePath, err)
+            return
+        }
+        defer file.Close()
+        
+        // Create CSV reader
+        reader := csv.NewReader(file)
+        
+        // Handle header row
+        if hasHeader {
+            if _, err := reader.Read(); err != nil {
+                fmt.Fprintf(os.Stderr, "Error reading header row: %v\n", err)
+                return
+            }
+        }
+        
+        for {
+            // Read a row
+            record, err := reader.Read()
+            if err == io.EOF {
+                break
+            }
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "Error reading CSV record: %v\n", err)
                 continue
             }
-            errors = append(errors, err)
+            
+            // Send the record
+            select {
+            case out <- record:
+                // Record sent
+            case <-ctx.Done():
+                return
+            }
+        }
+    }()
+    
+    return out
+}
+
+// LogParser transforms log lines into structured entries
+func LogParser(ctx context.Context, lines <-chan string) <-chan LogEntry {
+    out := make(chan LogEntry)
+    
+    go func() {
+        defer close(out)
         
-        case <-doneCh:
-            // All workers finished
-            doneCh = nil
+        for line := range lines {
+            // Parse log entry (simplified example)
+            entry := parseLogEntry(line)
+            
+            // Send parsed entry
+            select {
+            case out <- entry:
+                // Entry sent
+            case <-ctx.Done():
+                return
+            }
+        }
+    }()
+    
+    return out
+}
+
+// LogFilter filters log entries based on level
+func LogFilter(ctx context.Context, entries <-chan LogEntry, minLevel string) <-chan LogEntry {
+    out := make(chan LogEntry)
+    
+    // Define log level priorities
+    levels := map[string]int{
+        "DEBUG": 0,
+        "INFO":  1,
+        "WARN":  2,
+        "ERROR": 3,
+        "FATAL": 4,
+    }
+    
+    minLevelVal := levels[strings.ToUpper(minLevel)]
+    
+    go func() {
+        defer close(out)
         
+        for entry := range entries {
+            // Check if entry meets minimum level
+            entryLevel := strings.ToUpper(entry.Level)
+            if levels[entryLevel] >= minLevelVal {
+                // Send filtered entry
+                select {
+                case out <- entry:
+                    // Entry sent
+                case <-ctx.Done():
+                    return
+                }
+            }
+        }
+    }()
+    
+    return out
+}
+
+// StatAggregator collects statistics from log entries
+func StatAggregator(ctx context.Context, entries <-chan LogEntry) <-chan Stats {
+    out := make(chan Stats, 1) // Buffer size 1 to ensure stats are sent even if receiver is slow
+    
+    go func() {
+        defer close(out)
+        
+        stats := Stats{
+            TimeRange: [2]time.Time{time.Now(), time.Time{}},
+        }
+        
+        errorMap := make(map[string]int)
+        
+        for entry := range entries {
+            // Update entry count
+            stats.TotalEntries++
+            
+            // Update level counts
+            switch strings.ToUpper(entry.Level) {
+            case "DEBUG":
+                stats.DebugCount++
+            case "INFO":
+                stats.InfoCount++
+            case "WARN":
+                stats.WarnCount++
+            case "ERROR", "FATAL":
+                stats.ErrorCount++
+                errorMap[entry.Message]++
+            }
+            
+            // Update time range
+            if entry.Timestamp.Before(stats.TimeRange[0]) {
+                stats.TimeRange[0] = entry.Timestamp
+            }
+            if entry.Timestamp.After(stats.TimeRange[1]) {
+                stats.TimeRange[1] = entry.Timestamp
+            }
+        }
+        
+        // Calculate top errors
+        type errorCount struct {
+            message string
+            count   int
+        }
+        
+        var errors []errorCount
+        for msg, count := range errorMap {
+            errors = append(errors, errorCount{msg, count})
+        }
+        
+        // Sort errors by count (simplified - in real code, use sort package)
+        // This is a simple bubble sort for demonstration
+        for i := 0; i < len(errors); i++ {
+            for j := i + 1; j < len(errors); j++ {
+                if errors[i].count < errors[j].count {
+                    errors[i], errors[j] = errors[j], errors[i]
+                }
+            }
+        }
+        
+        // Get top 5 errors or fewer if there are less than 5
+        topCount := 5
+        if len(errors) < 5 {
+            topCount = len(errors)
+        }
+        
+        stats.TopErrors = make([]string, topCount)
+        for i := 0; i < topCount; i++ {
+            stats.TopErrors[i] = errors[i].message
+        }
+        
+        // Send aggregated stats
+        select {
+        case out <- stats:
+            // Stats sent
         case <-ctx.Done():
-            // Timeout reached
-            return fmt.Errorf("processing timed out after %v", fp.timeout)
+            return
         }
+    }()
+    
+    return out
+}
 
-        // Exit when both channels are closed
-        if errorCh == nil && doneCh == nil {
-            break
+// JSONWriter writes entries to a JSON file
+func JSONWriter(ctx context.Context, entries <-chan LogEntry, outputPath string, batchSize int) <-chan int {
+    out := make(chan int, 1)
+    
+    go func() {
+        defer close(out)
+        
+        // Create output file
+        file, err := os.Create(outputPath)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+            out <- 0
+            return
+        }
+        defer file.Close()
+        
+        // Create JSON encoder
+        encoder := json.NewEncoder(file)
+        
+        // Write opening bracket for array
+        file.WriteString("[\n")
+        
+        count := 0
+        first := true
+        batch := make([]LogEntry, 0, batchSize)
+        
+        for entry := range entries {
+            // Add to batch
+            batch = append(batch, entry)
+            count++
+            
+            // Write batch if full
+            if len(batch) >= batchSize {
+                writeEntryBatch(file, batch, first, encoder)
+                first = false
+                batch = batch[:0] // Clear batch
+            }
+            
+            // Check for cancellation
+            select {
+            case <-ctx.Done():
+                break
+            default:
+                // Continue
+            }
+        }
+        
+        // Write any remaining entries
+        if len(batch) > 0 {
+            writeEntryBatch(file, batch, first, encoder)
+        }
+        
+        // Write closing bracket for array
+        file.WriteString("\n]")
+        
+        // Send total count
+        select {
+        case out <- count:
+            // Count sent
+        case <-ctx.Done():
+            return
+        }
+    }()
+    
+    return out
+}
+
+// Helper function to write a batch of entries
+func writeEntryBatch(file *os.File, batch []LogEntry, first bool, encoder *json.Encoder) {
+    for i, entry := range batch {
+        if !first || i > 0 {
+            file.WriteString(",\n")
+        }
+        
+        // Write entry
+        encoder.Encode(entry)
+    }
+}
+
+// Helper function to parse a log entry (simplified)
+func parseLogEntry(line string) LogEntry {
+    // This is a very simplified parser
+    // In a real implementation, you'd use regex or proper parsers
+    
+    parts := strings.SplitN(line, " ", 4)
+    entry := LogEntry{
+        Raw:      line,
+        Metadata: make(map[string]interface{}),
+    }
+    
+    if len(parts) >= 1 {
+        // Try to parse timestamp
+        timestamp, err := time.Parse("2006-01-02T15:04:05", parts[0])
+        if err == nil {
+            entry.Timestamp = timestamp
+        } else {
+            entry.Timestamp = time.Now()
         }
     }
-
-    // Return combined errors if any
-    if len(errors) > 0 {
-        errorMessages := make([]string, len(errors))
-        for i, err := range errors {
-            errorMessages[i] = err.Error()
-        }
-        return fmt.Errorf("encountered %d errors: %s", len(errors), strings.Join(errorMessages, "; "))
+    
+    if len(parts) >= 2 {
+        entry.Level = parts[1]
     }
-
-    return nil
+    
+    if len(parts) >= 3 {
+        entry.Message = parts[2]
+    }
+    
+    if len(parts) >= 4 {
+        // Try to extract metadata
+        metaStr := parts[3]
+        if strings.Contains(metaStr, "=") {
+            metaParts := strings.Split(metaStr, " ")
+            for _, p := range metaParts {
+                kv := strings.SplitN(p, "=", 2)
+                if len(kv) == 2 {
+                    entry.Metadata[kv[0]] = kv[1]
+                }
+            }
+        }
+    }
+    
+    return entry
 }
 
 func main() {
-    // Create a file processor with 4 workers and 5 minute timeout
-    processor := NewFileProcessor(4, 5*time.Minute)
+    // Create context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
     
-    // Define a simple file processor function
-    processFile := func(path string) error {
-        // Simulate file processing
-        time.Sleep(100 * time.Millisecond)
+    // Directory to scan
+    logDir := "./logs"
+    
+    // Start the processing pipeline
+    fmt.Println("Starting log processing pipeline...")
+    
+    // Stage 1: Find log files
+    fmt.Println("Finding log files...")
+    logFiles := FileScanner(ctx, logDir, "*.log")
+    
+    // Set up a wait group to track file processing
+    var wg sync.WaitGroup
+    
+    // Process each file
+    fileCount := 0
+    for filePath := range logFiles {
+        fileCount++
+        wg.Add(1)
         
-        // Example: Skip files larger than 100MB
-        info, err := os.Stat(path)
-        if err != nil {
-            return err
-        }
-        
-        if info.Size() > 100*1024*1024 {
-            return fmt.Errorf("file too large: %d bytes", info.Size())
-        }
-        
-        fmt.Printf("Processed file: %s (%d bytes)\n", path, info.Size())
-        return nil
+        go func(path string) {
+            defer wg.Done()
+            
+            fmt.Printf("Processing file: %s\n", path)
+            
+            // Create file-specific context
+            fileCtx, fileCancel := context.WithCancel(ctx)
+            defer fileCancel()
+            
+            // Stage 2: Read lines from file
+            lines := LineReader(fileCtx, path)
+            
+            // Stage 3: Parse log entries
+            entries := LogParser(fileCtx, lines)
+            
+            // Stage 4: Filter entries by level
+            filteredEntries := LogFilter(fileCtx, entries, "INFO")
+            
+            // Stage 5: Aggregate statistics
+            statsCh := StatAggregator(fileCtx, filteredEntries)
+            
+            // Get stats
+            stats, ok := <-statsCh
+            if !ok {
+                fmt.Printf("Failed to get stats for %s\n", path)
+                return
+            }
+            
+            // Output results
+            fmt.Printf("File: %s\n", path)
+            fmt.Printf("  Total entries: %d\n", stats.TotalEntries)
+            fmt.Printf("  Error entries: %d\n", stats.ErrorCount)
+            fmt.Printf("  Warning entries: %d\n", stats.WarnCount)
+            fmt.Printf("  Info entries: %d\n", stats.InfoCount)
+            fmt.Printf("  Debug entries: %d\n", stats.DebugCount)
+            fmt.Printf("  Time range: %v to %v\n", stats.TimeRange[0], stats.TimeRange[1])
+            
+            if len(stats.TopErrors) > 0 {
+                fmt.Println("  Top errors:")
+                for i, err := range stats.TopErrors {
+                    fmt.Printf("    %d. %s\n", i+1, err)
+                }
+            }
+        }(filePath)
     }
     
-    // Process all files in the current directory
-    if err := processor.ProcessDirectory(".", processFile); err != nil {
-        log.Fatalf("Error processing directory: %v", err)
+    // Wait for all files to be processed
+    wg.Wait()
+    
+    if fileCount == 0 {
+        fmt.Println("No log files found")
+    } else {
+        fmt.Printf("Processed %d log files\n", fileCount)
     }
     
-    fmt.Println("All files processed successfully!")
+    fmt.Println("Log processing complete")
 }
+```
+
+**Common Pitfalls:**
+- Creating generators without proper cancellation, leading to goroutine leaks
+- Not closing channels when done generating, causing deadlocks in consumers
+- Forgetting to check for closed channels in iterators
+- Using unbuffered channels for generators that need to produce many values quickly
+- Creating complex generator chains that are hard to debug
+- Overlooking the memory overhead of goroutines in very large generator networks
+- Not implementing proper error handling in generators
+- Using recursive generators without base cases, causing infinite loops
+- Missing synchronization when accessing iterator state from multiple goroutines
+
+**Confusion Questions:**
+
+1. **Q: How do generators in Go differ from generators in languages like Python or JavaScript?**
+
+   A: Generators in Go differ significantly from those in languages like Python or JavaScript, primarily in implementation approach and concurrency model:
+
+   **Implementation Approach Differences:**
+
+   **In Python/JavaScript:**
+   ```python
+   # Python generator using yield
+   def range_generator(start, end):
+       for i in range(start, end):
+           yield i
+
+   # Usage
+   for num in range_generator(1, 5):
+       print(num)
+   ```
+
+   ```javascript
+   // JavaScript generator using yield
+   function* rangeGenerator(start, end) {
+       for (let i = start; i < end; i++) {
+           yield i;
+       }
+   }
+
+   // Usage
+   for (const num of rangeGenerator(1, 5)) {
+       console.log(num);
+   }
+   ```
+
+   **In Go:**
+   ```go
+   // Go generator using goroutines and channels
+   func rangeGenerator(ctx context.Context, start, end int) <-chan int {
+       out := make(chan int)
+       
+       go func() {
+           defer close(out)
+           
+           for i := start; i < end; i++ {
+               select {
+               case <-ctx.Done():
+                   return
+               case out <- i:
+                   // Value sent
+               }
+           }
+       }()
+       
+       return out
+   }
+
+   // Usage
+   for num := range rangeGenerator(ctx, 1, 5) {
+       fmt.Println(num)
+   }
+   ```
+
+   **Key differences:**
+
+   1. **Language Support**:
+      - Python/JavaScript: Native language feature with `yield` keyword
+      - Go: Pattern implemented using goroutines and channels
+
+   2. **Execution Model**:
+      - Python/JavaScript: Pause and resume execution within the same function
+      - Go: Separate goroutine runs concurrently, communicating via channels
+
+   3. **Memory Overhead**:
+      - Python/JavaScript: Minimal overhead to save function state
+      - Go: Goroutine overhead (initially ~2KB per goroutine)
+
+   4. **Concurrency**:
+      - Python/JavaScript: Generators are not inherently concurrent
+      - Go: Generators are built on Go's concurrency primitives
+
+   5. **Cancellation**:
+      - Python/JavaScript: Requires manual handling
+      - Go: Natural cancellation through context or closing channels
+
+   6. **Composition**:
+      - Python/JavaScript: Can use generator delegation (yield from/yield*)
+      - Go: Pipeline composition by connecting channels
+
+   **Performance implications:**
+
+   Go's approach offers several advantages:
+
+   1. **Parallelism**: Go generators can truly run in parallel on multiple cores
+   2. **Backpressure**: Unbuffered channels provide natural backpressure
+   3. **Cancellation**: Easy integration with Go's context package
+   4. **Distribution**: Can distribute generators across network boundaries
+
+   However, there are trade-offs:
+
+   1. **Overhead**: Higher memory usage due to goroutine allocation
+   2. **Complexity**: More complex to implement simple iterative patterns
+   3. **Debugging**: Harder to trace execution flow across goroutines
+
+   **When to use Go's approach vs. traditional iteration:**
+
+   - Use Go generators when:
+     - Processing large data sets that benefit from parallelism
+     - Building pipelines with multiple transformation stages
+     - Dealing with I/O bound operations that can run concurrently
+     - Creating truly infinite sequences where memory is a concern
+
+   - Use traditional iteration when:
+     - Dealing with small, finite collections
+     - Maximum performance is critical and data fits in memory
+     - The complexity of channels and goroutines isn't justified
+     - Sequential processing is more appropriate for the problem
+
+   Go's generator pattern is a powerful tool, but it represents a different philosophy: build concurrency into your fundamental data flow patterns, rather than adding it as an afterthought.
+
+2. **Q: How do I handle errors in generator pipelines?**
+
+   A: Error handling in Go generator pipelines requires special attention because errors can occur in any stage. Here are comprehensive strategies for handling errors in generator pipelines:
+
+   **Strategy 1: Include errors in the output type**
+
+   Create a result type that includes both the value and any error:
+
+   ```go
+   type Result struct {
+       Value int
+       Err   error
+   }
+
+   func Generator(ctx context.Context, data []int) <-chan Result {
+       out := make(chan Result)
+       
+       go func() {
+           defer close(out)
+           
+           for _, v := range data {
+               // Simulate potential error
+               var err error
+               if v < 0 {
+                   err = fmt.Errorf("negative value: %d", v)
+               }
+               
+               select {
+               case <-ctx.Done():
+                   return
+               case out <- Result{Value: v, Err: err}:
+                   // Result sent
+               }
+           }
+       }()
+       
+       return out
+   }
+
+   // Consumer checks errors
+   for result := range Generator(ctx, data) {
+       if result.Err != nil {
+           log.Printf("Error: %v", result.Err)
+           continue // or handle error differently
+       }
+       
+       // Process valid result
+       fmt.Println("Value:", result.Value)
+   }
+   ```
+
+   **Strategy 2: Separate error channel**
+
+   Use a separate channel for errors, especially useful for centralized error handling:
+
+   ```go
+   func GeneratorWithErrCh(ctx context.Context, data []int) (<-chan int, <-chan error) {
+       valueCh := make(chan int)
+       errCh := make(chan error, 1) // Buffer prevents blocking if consumer only reads values
+       
+       go func() {
+           defer close(valueCh)
+           defer close(errCh)
+           
+           for _, v := range data {
+               if v < 0 {
+                   select {
+                   case errCh <- fmt.Errorf("negative value: %d", v):
+                       // Error sent, continue with next value
+                   case <-ctx.Done():
+                       return
+                   }
+                   continue
+               }
+               
+               select {
+               case <-ctx.Done():
+                   return
+               case valueCh <- v:
+                   // Value sent
+               }
+           }
+       }()
+       
+       return valueCh, errCh
+   }
+
+   // Consumer handles both channels
+   valuesCh, errCh := GeneratorWithErrCh(ctx, data)
+   
+   // Handle errors in separate goroutine
+   go func() {
+       for err := range errCh {
+           log.Printf("Error: %v", err)
+       }
+   }()
+   
+   // Process values
+   for v := range valuesCh {
+       fmt.Println("Value:", v)
+   }
+   ```
+
+   **Strategy 3: Error pipeline stage**
+
+   Create a dedicated pipeline stage for error handling:
+
+   ```go
+   func HandleErrors(ctx context.Context, in <-chan Result) (<-chan int, <-chan error) {
+       outCh := make(chan int)
+       errCh := make(chan error, 10) // Buffered to prevent blocking
+       
+       go func() {
+           defer close(outCh)
+           defer close(errCh)
+           
+           for result := range in {
+               if result.Err != nil {
+                   select {
+                   case errCh <- result.Err:
+                       // Error sent
+                   case <-ctx.Done():
+                       return
+                   }
+                   continue
+               }
+               
+               select {
+               case outCh <- result.Value:
+                   // Value sent
+               case <-ctx.Done():
+                   return
+               }
+           }
+       }()
+       
+       return outCh, errCh
+   }
+   
+   // In use:
+   resultCh := Generator(ctx, data)
+   valuesCh, errCh := HandleErrors(ctx, resultCh)
+   
+   // Handle errors and values separately
+   ```
+
+   **Strategy 4: Error aggregation**
+
+   Collect and aggregate errors from multiple stages:
+
+   ```go
+   type ErrorCollector struct {
+       errors []error
+       mu     sync.Mutex
+   }
+
+   func (ec *ErrorCollector) Add(err error) {
+       ec.mu.Lock()
+       defer ec.mu.Unlock()
+       ec.errors = append(ec.errors, err)
+   }
+
+   func (ec *ErrorCollector) Errors() []error {
+       ec.mu.Lock()
+       defer ec.mu.Unlock()
+       return ec.errors
+   }
+   
+   func Process(ctx context.Context, data []int) ([]int, []error) {
+       // Create pipeline with error collector
+       collector := &ErrorCollector{}
+       
+       // Source generator
+       source := func() <-chan Result {
+           out := make(chan Result)
+           go func() {
+               defer close(out)
+               for _, v := range data {
+                   if v < 0 {
+                       out <- Result{Err: fmt.Errorf("negative input: %d", v)}
+                   } else {
+                       out <- Result{Value: v}
+                   }
+               }
+           }()
+           return out
+       }()
+       
+       // Process stage
+       processed := func(in <-chan Result) <-chan Result {
+           out := make(chan Result)
+           go func() {
+               defer close(out)
+               for r := range in {
+                   // Skip results with errors
+                   if r.Err != nil {
+                       collector.Add(r.Err)
+                       continue
+                   }
+                   
+                   // Process value
+                   if r.Value%2 == 0 {
+                       out <- Result{Value: r.Value * 2}
+                   } else {
+                       err := fmt.Errorf("odd value not supported: %d", r.Value)
+                       collector.Add(err)
+                   }
+               }
+           }()
+           return out
+       }(source)
+       
+       // Collect results
+       var results []int
+       for r := range processed {
+           if r.Err != nil {
+               collector.Add(r.Err)
+               continue
+           }
+           results = append(results, r.Value)
+       }
+       
+       return results, collector.Errors()
+   }
+   ```
+
+   **Strategy 5: Context-based cancellation on first error**
+
+   Cancel the entire pipeline when any stage encounters an error:
+
+   ```go
+   func PipelineWithEarlyExit(parentCtx context.Context, data []int) ([]int, error) {
+       ctx, cancel := context.WithCancel(parentCtx)
+       defer cancel() // Ensure cancellation
+       
+       var firstErr error
+       var errOnce sync.Once
+       
+       setError := func(err error) {
+           errOnce.Do(func() {
+               firstErr = err
+               cancel() // Cancel context on first error
+           })
+       }
+       
+       // First stage generator
+       stage1 := func() <-chan int {
+           out := make(chan int)
+           go func() {
+               defer close(out)
+               for _, v := range data {
+                   if v < 0 {
+                       setError(fmt.Errorf("negative value: %d", v))
+                       return
+                   }
+                   
+                   select {
+                   case out <- v:
+                       // Value sent
+                   case <-ctx.Done():
+                       return
+                   }
+               }
+           }()
+           return out
+       }()
+       
+       // Second stage processor
+       stage2 := func(in <-chan int) <-chan int {
+           out := make(chan int)
+           go func() {
+               defer close(out)
+               for v := range in {
+                   result := v * 2
+                   if result > 100 {
+                       setError(fmt.Errorf("result too large: %d", result))
+                       return
+                   }
+                   
+                   select {
+                   case out <- result:
+                       // Processed value sent
+                   case <-ctx.Done():
+                       return
+                   }
+               }
+           }()
+           return out
+       }(stage1)
+       
+       // Collect results
+       var results []int
+       for v := range stage2 {
+           results = append(results, v)
+           
+           // Check for cancellation
+           if ctx.Err() != nil {
+               break
+           }
+       }
+       
+       if firstErr != nil {
+           return results, firstErr
+       }
+       
+       if parentCtx.Err() != nil {
+           return results, parentCtx.Err()
+       }
+       
+       return results, nil
+   }
+   ```
+
+   **Best practices for error handling in generators:**
+
+   1. **Be consistent**: Use the same error handling approach throughout your pipeline
+   2. **Favor early error detection**: Validate inputs before processing when possible
+   3. **Consider error severity**: Not all errors should terminate the pipeline
+   4. **Provide context**: Wrap errors with stage-specific information
+   5. **Handle resource cleanup**: Ensure resources are freed even when errors occur
+   6. **Document error handling**: Make it clear how errors propagate through your pipeline
+   7. **Test error paths**: Verify your error handling logic works as expected
+
+   The best approach depends on your specific requirements - whether you need to process partial results despite errors (strategies 1-3) or fail fast on any error (strategy 5).
+
+3. **Q: How can I limit memory usage when processing very large data sets with generators?**
+
+   A: Processing very large data sets with generators requires careful memory management to avoid exhaustion. Here are comprehensive strategies for limiting memory usage:
+
+   **1. Use backpressure with unbuffered channels**
+
+   Unbuffered channels naturally implement backpressure, preventing producers from outpacing consumers:
+
+   ```go
+   func DataGenerator(ctx context.Context) <-chan LargeData {
+       // Unbuffered channel forces synchronization
+       out := make(chan LargeData) // Not buffered
+       
+       go func() {
+           defer close(out)
+           
+           for {
+               data, err := fetchNextChunk()
+               if err != nil {
+                   if errors.Is(err, io.EOF) {
+                       return
+                   }
+                   log.Printf("Error fetching chunk: %v", err)
+                   continue
+               }
+               
+               select {
+               case out <- data:
+                   // Will block until consumer is ready to receive
+               case <-ctx.Done():
+                   return
+               }
+           }
+       }()
+       
+       return out
+   }
+   ```
+
+   **2. Process data in fixed-size chunks**
+
+   Break large datasets into manageable chunks:
+
+   ```go
+   const chunkSize = 1000 // Process 1000 records at a time
+
+   func ChunkedProcessor(ctx context.Context, source <-chan Record) <-chan ProcessedChunk {
+       out := make(chan ProcessedChunk)
+       
+       go func() {
+           defer close(out)
+           
+           chunk := make([]Record, 0, chunkSize)
+           for record := range source {
+               chunk = append(chunk, record)
+               
+               // When chunk is full, process it
+               if len(chunk) >= chunkSize {
+                   result := processChunk(chunk)
+                   
+                   select {
+                   case out <- result:
+                       // Sent processed chunk
+                   case <-ctx.Done():
+                       return
+                   }
+                   
+                   // Create new chunk (reuse memory)
+                   chunk = make([]Record, 0, chunkSize)
+               }
+           }
+           
+           // Process final partial chunk
+           if len(chunk) > 0 {
+               select {
+               case out <- processChunk(chunk):
+                   // Sent final chunk
+               case <-ctx.Done():
+                   return
+               }
+           }
+       }()
+       
+       return out
+   }
+   ```
+
+   **3. Implement object pooling for large structures**
+
+   Reuse memory with sync.Pool:
+
+   ```go
+   type DataBlock struct {
+       Buffer []byte
+       // Other fields...
+   }
+
+   var blockPool = sync.Pool{
+       New: func() interface{} {
+           return &DataBlock{Buffer: make([]byte, 64*1024)} // 64KB blocks
+       },
+   }
+
+   func StreamProcessor(ctx context.Context, reader io.Reader) <-chan Result {
+       out := make(chan Result)
+       
+       go func() {
+           defer close(out)
+           
+           for {
+               // Get block from pool
+               block := blockPool.Get().(*DataBlock)
+               
+               // Read data into block
+               n, err := reader.Read(block.Buffer)
+               if err != nil {
+                   if err != io.EOF {
+                       log.Printf("Read error: %v", err)
+                   }
+                   
+                   // Return block to pool
+                   blockPool.Put(block)
+                   break
+               }
+               
+               // Process block and send result
+               if n > 0 {
+                   // Clone only the data we need
+                   dataToProcess := make([]byte, n)
+                   copy(dataToProcess, block.Buffer[:n])
+                   
+                   result := processData(dataToProcess)
+                   
+                   // Return block to pool early
+                   blockPool.Put(block)
+                   
+                   select {
+                   case out <- result:
+                       // Sent result
+                   case <-ctx.Done():
+                       return
+                   }
+               }
+           }
+       }()
+       
+       return out
+   }
+   ```
+
+   **4. Implement windowing for time-series or sequential data**
+
+   Process data in sliding windows to limit memory usage:
+
+   ```go
+   func SlidingWindowProcessor(ctx context.Context, source <-chan DataPoint, windowSize int, slideSize int) <-chan WindowResult {
+       out := make(chan WindowResult)
+       
+       go func() {
+           defer close(out)
+           
+           // Circular buffer implementation
+           buffer := make([]DataPoint, windowSize)
+           bufferIdx := 0
+           totalPoints := 0
+           
+           for point := range source {
+               // Add to buffer, overwriting oldest data
+               buffer[bufferIdx] = point
+               bufferIdx = (bufferIdx + 1) % windowSize
+               
+               totalPoints++
+               
+               // Process window when we have enough data and hit slide boundary
+               if totalPoints >= windowSize && totalPoints%slideSize == 0 {
+                   // Create a window from buffer
+                   window := make([]DataPoint, windowSize)
+                   
+                   // Arrange in chronological order
+                   for i := 0; i < windowSize; i++ {
+                       window[i] = buffer[(bufferIdx+i)%windowSize]
+                   }
+                   
+                   result := processWindow(window)
+                   
+                   select {
+                   case out <- result:
+                       // Window result sent
+                   case <-ctx.Done():
+                       return
+                   }
+               }
+           }
+       }()
+       
+       return out
+   }
+   ```
+
+   **5. Use streaming algorithms**
+
+   For certain types of processing, use algorithms that don't require holding all data:
+
+   ```go
+   func StreamingStatsGenerator(ctx context.Context, source <-chan float64) <-chan Stats {
+       out := make(chan Stats)
+       
+       go func() {
+           defer close(out)
+           
+           var (
+               count int64
+               sum, min, max float64
+               mean float64
+               m2 float64 // For online variance calculation
+           )
+           
+           // Initialize
+           first := true
+           
+           // Process stream one value at a time
+           for value := range source {
+               count++
+               
+               if first {
+                   min = value
+                   max = value
+                   mean = value
+                   first = false
+               } else {
+                   // Update min/max
+                   if value < min {
+                       min = value
+                   }
+                   if value > max {
+                       max = value
+                   }
+                   
+                   // Welford's algorithm for online mean and variance
+                   delta := value - mean
+                   mean += delta / float64(count)
+                   m2 += delta * (value - mean)
+               }
+               
+               // Periodically emit stats (e.g., every 1000 values)
+               if count%1000 == 0 {
+                   var variance float64
+                   if count > 1 {
+                       variance = m2 / float64(count-1)
+                   }
+                   
+                   stats := Stats{
+                       Count:    count,
+                       Mean:     mean,
+                       Min:      min,
+                       Max:      max,
+                       Variance: variance,
+                   }
+                   
+                   select {
+                   case out <- stats:
+                       // Stats sent
+                   case <-ctx.Done():
+                       return
+                   }
+               }
+           }
+           
+           // Send final stats
+           var variance float64
+           if count > 1 {
+               variance = m2 / float64(count-1)
+           }
+           
+           select {
+           case out <- Stats{
+               Count:    count,
+               Mean:     mean,
+               Min:      min,
+               Max:      max,
+               Variance: variance,
+           }:
+               // Final stats sent
+           case <-ctx.Done():
+               return
+           }
+       }()
+       
+       return out
+   }
+   ```
+
+   **6. Implement memory tracking and adaptive throttling**
+
+   Monitor memory usage and slow down processing if needed:
+
+   ```go
+   func MemoryAwareGenerator(ctx context.Context, source <-chan LargeData) <-chan ProcessedData {
+       out := make(chan ProcessedData)
+       
+       go func() {
+           defer close(out)
+           
+           ticker := time.NewTicker(100 * time.Millisecond)
+           defer ticker.Stop()
+           
+           for {
+               var data LargeData
+               var ok bool
+               
+               // Try to get next item
+               select {
+               case data, ok = <-source:
+                   if !ok {
+                       return // Source is closed
+                   }
+               case <-ctx.Done():
+                   return
+               }
+               
+               // Check memory pressure
+               if isHighMemoryUsage() {
+                   log.Println("High memory usage detected, throttling")
+                   
+                   // Wait for memory pressure to reduce or context to cancel
+                   select {
+                   case <-time.After(1 * time.Second):
+                       // Continue with processing after delay
+                   case <-ctx.Done():
+                       return
+                   }
+               }
+               
+               // Process data
+               result := process(data)
+               
+               // Send result
+               select {
+               case out <- result:
+                   // Result sent
+               case <-ctx.Done():
+                   return
+               }
+           }
+       }()
+       
+       return out
+   }
+   
+   func isHighMemoryUsage() bool {
+       var m runtime.MemStats
+       runtime.ReadMemStats(&m)
+       
+       // If using more than 80% of available memory, throttle
+       return m.Alloc > (m.Sys * 8/10)
+   }
+   ```
+
+   **7. Implement disk-backed buffers for overflow**
+
+   Use disk storage when memory pressure is too high:
+
+   ```go
+   type DiskBackedBuffer struct {
+       memoryBuffer []Data
+       memoryLimit  int
+       diskBuffer   *os.File
+       count        int64
+       mu           sync.Mutex
+   }
+
+   func NewDiskBackedBuffer(memoryLimit int) (*DiskBackedBuffer, error) {
+       // Create temporary file
+       tempFile, err := os.CreateTemp("", "buffer-*.tmp")
+       if err != nil {
+           return nil, err
+       }
+       
+       return &DiskBackedBuffer{
+           memoryBuffer: make([]Data, 0, memoryLimit),
+           memoryLimit:  memoryLimit,
+           diskBuffer:   tempFile,
+       }, nil
+   }
+
+   func (b *DiskBackedBuffer) Add(data Data) error {
+       b.mu.Lock()
+       defer b.mu.Unlock()
+       
+       // If buffer isn't full, keep in memory
+       if len(b.memoryBuffer) < b.memoryLimit {
+           b.memoryBuffer = append(b.memoryBuffer, data)
+           b.count++
+           return nil
+       }
+       
+       // Otherwise, write to disk
+       bytes, err := json.Marshal(data)
+       if err != nil {
+           return err
+       }
+       
+       // Write length prefix and data
+       lenBytes := make([]byte, 8)
+       binary.LittleEndian.PutUint64(lenBytes, uint64(len(bytes)))
+       
+       if _, err := b.diskBuffer.Write(lenBytes); err != nil {
+           return err
+       }
+       
+       if _, err := b.diskBuffer.Write(bytes); err != nil {
+           return err
+       }
+       
+       b.count++
+       return nil
+   }
+
+   // Implementation of iterator interface omitted for brevity
+   ```
+
+   **8. Dynamic generator pipeline resizing**
+
+   Adjust the number of parallel workers based on memory usage:
+
+   ```go
+   func AdaptiveParallelProcessor(ctx context.Context, source <-chan LargeData, initialWorkers int) <-chan Result {
+       out := make(chan Result)
+       
+       // Channel for worker communication
+       workCh := make(chan LargeData)
+       
+       // Worker count control
+       var (
+           activeWorkers int
+           workerMu      sync.Mutex
+           workerWg      sync.WaitGroup
+       )
+       
+       // Monitoring goroutine
+       go func() {
+           ticker := time.NewTicker(1 * time.Second)
+           defer ticker.Stop()
+           
+           for {
+               select {
+               case <-ticker.C:
+                   // Check memory usage
+                   var m runtime.MemStats
+                   runtime.ReadMemStats(&m)
+                   
+                   memUsagePercent := float64(m.Alloc) / float64(m.Sys)
+                   
+                   workerMu.Lock()
+                   
+                   if memUsagePercent > 0.8 && activeWorkers > 1 {
+                       // Too high memory usage, reduce workers
+                       log.Printf("High memory usage (%.1f%%), reducing workers from %d to %d", 
+                           memUsagePercent*100, activeWorkers, activeWorkers-1)
+                       activeWorkers--
+                   } else if memUsagePercent < 0.5 && activeWorkers < initialWorkers*2 {
+                       // Memory usage is fine, can increase workers
+                       log.Printf("Low memory usage (%.1f%%), increasing workers from %d to %d", 
+                           memUsagePercent*100, activeWorkers, activeWorkers+1)
+                       
+                       // Launch new worker
+                       workerWg.Add(1)
+                       activeWorkers++
+                       go worker(workCh, out, &workerWg)
+                   }
+                   
+                   workerMu.Unlock()
+                   
+               case <-ctx.Done():
+                   return
+               }
+           }
+       }()
+       
+       // Start initial workers
+       workerMu.Lock()
+       activeWorkers = initialWorkers
+       workerMu.Unlock()
+       
+       for i := 0; i < initialWorkers; i++ {
+           workerWg.Add(1)
+           go worker(workCh, out, &workerWg)
+       }
+       
+       // Forward data from source to work channel
+       go func() {
+           defer close(workCh) // Signal workers to stop
+           
+           for data := range source {
+               select {
+               case workCh <- data:
+                   // Data sent to a worker
+               case <-ctx.Done():
+                   return
+               }
+           }
+       }()
+       
+       // Wait for workers to finish and close output
+       go func() {
+           workerWg.Wait()
+           close(out)
+       }()
+       
+       return out
+   }
+   
+   func worker(in <-chan LargeData, out chan<- Result, wg *sync.WaitGroup) {
+       defer wg.Done()
+       
+       for data := range in {
+           result := process(data)
+           out <- result
+       }
+   }
+   ```
+
+   **9. Implement lazy loading for nested data**
+
+   Only load details when needed:
+
+   ```go
+   type LazyRecord struct {
+       ID        string
+       BasicInfo *BasicInfo
+       detailsKey string
+       detailsLoader func(key string) (*Details, error)
+       details   *Details
+       detailsLoaded bool
+       mu        sync.Mutex
+   }
+
+   func (r *LazyRecord) GetDetails() (*Details, error) {
+       r.mu.Lock()
+       defer r.mu.Unlock()
+       
+       if r.detailsLoaded {
+           return r.details, nil
+       }
+       
+       details, err := r.detailsLoader(r.detailsKey)
+       if err != nil {
+           return nil, err
+       }
+       
+       r.details = details
+       r.detailsLoaded = true
+       return details, nil
+   }
+   ```
+
+   **Key principles for memory-efficient generators:**
+
+   1. **Process incrementally**: Never load the entire dataset at once
+   2. **Use streaming algorithms**: Choose algorithms that don't require the full dataset
+   3. **Implement backpressure**: Prevent producers from overwhelming consumers
+   4. **Monitor resource usage**: Track memory and adjust behavior accordingly
+   5. **Pool and reuse objects**: Minimize allocations for frequently used structures
+   6. **Control parallelism**: Match concurrency to available resources
+   7. **Use appropriate data structures**: Choose memory-efficient representations
+   8. **Benchmark and profile**: Measure memory usage to identify bottlenecks
+
+   By combining these techniques, you can process datasets much larger than available memory while maintaining good performance.
+
+## Next Actions
+
+### Exercises and Micro-Projects
+
+#### Exercise 1: Rate Limited API Client
+Build a robust API client with rate limiting features, including:
+- Token bucket rate limiting for API endpoints
+- Concurrent request handling with bounded parallelism
+- Automatic retries with exponential backoff
+- Proper error handling and timeout management
+- Support for different rate limits per endpoint
+
+Test your client with a real or mock API service to ensure it respects rate limits while maximizing throughput.
+
+#### Exercise 2: Infinite Sequence Generator Library
+Create a library that implements various infinite sequence generators:
+- Fibonacci sequence generator
+- Prime number generator
+- Random number generator with various distributions
+- Date/time sequence generator
+- Custom sequence generator with user-provided functions
+
+Include utilities to limit, transform, filter, and combine these generators. Make sure all generators support proper cancellation via context.
+
+#### Exercise 3: Concurrent Web Crawler
+Build a web crawler that:
+- Crawls websites while respecting robots.txt
+- Implements rate limiting per domain
+- Uses worker pools to download and process pages
+- Extracts links and follows them within specified constraints
+- Saves content or performs analytics
+- Implements graceful shutdown
+
+Focus on respecting website limits while maximizing crawl efficiency.
+
+#### Exercise 4: Memory-Efficient Log Processor
+Develop a log processing system that:
+- Processes log files that are too large to fit in memory
+- Uses generator patterns to stream data
+- Implements multiple processing stages (parsing, filtering, aggregation)
+- Provides statistical analysis of log data
+- Handles multiple log formats
+- Exports results in various formats (CSV, JSON, etc.)
+
+Test with increasingly large log files to ensure memory usage remains constant.
+
+#### Exercise 5: Adaptive Rate Limiter
+Create an advanced rate limiter that:
+- Automatically adjusts rate limits based on response times
+- Implements different algorithms (token bucket, leaky bucket, etc.)
+- Supports distributed rate limiting with Redis
+- Provides monitoring and metrics
+- Handles different priority levels for requests
+- Gracefully degrades under high load
+
+### Micro-Project: Data Pipeline Framework
+
+Create a reusable data pipeline framework that combines both rate limiting and generator patterns:
+
+**Requirements:**
+1. A pipeline architecture with stages for source, transformation, and sink
+2. Support for both batch and stream processing modes
+3. Rate limiting capabilities at multiple points in the pipeline
+4. Memory-efficient processing using generator patterns
+5. Error handling with optional retry mechanisms
+6. Monitoring and metrics collection
+7. Graceful shutdown and resource cleanup
+8. Pluggable components for custom processing logic
+
+**Core Components:**
+- Pipeline coordinator that manages overall flow
+- Source connectors (files, databases, APIs, etc.)
+- Transformation stages with customizable functions
+- Rate limiters for controlling throughput
+- Memory management utilities
+- Error handling middleware
+- Sink connectors for output destinations
+
+**Advanced Features:**
+- Back pressure mechanisms
+- Dynamic scaling based on system load
+- Checkpointing for resumable processing
+- Priority queues for important data
+- Circuit breakers for external dependencies
+
+## Success Criteria
+
+For rate limiting, you've mastered the concept when you can:
+
+1. **Implement different rate limiting algorithms**
+   - Create token bucket, leaky bucket, and fixed window rate limiters
+   - Choose the appropriate algorithm for different use cases
+   - Tune rate limiters for optimal performance
+
+2. **Apply rate limiting at different levels**
+   - Implement per-user, per-resource, and global rate limiting
+   - Create hierarchical rate limiting systems
+   - Coordinate rate limits across distributed systems
+
+3. **Handle rate limit violations gracefully**
+   - Implement backoff and retry mechanisms
+   - Provide appropriate feedback to users or systems
+   - Gracefully degrade service under high load
+
+For generators and iterators, you've mastered the concept when you can:
+
+1. **Design efficient data processing pipelines**
+   - Create multi-stage generators that process data incrementally
+   - Compose generator stages into complex pipelines
+   - Implement proper error handling throughout the pipeline
+
+2. **Process large datasets with constant memory**
+   - Handle datasets larger than available RAM
+   - Implement streaming algorithms for common operations
+   - Monitor and control memory usage during processing
+
+3. **Implement specialized generators for different data sources**
+   - Create generators for files, databases, APIs, and other sources
+   - Build custom iterators for complex data structures
+   - Design generators that respect resource constraints
+
+## Troubleshooting
+
+### Common Issues and Solutions for Rate Limiting
+
+1. **Too Restrictive Rate Limits**
+   - **Problem**: Legitimate traffic is being blocked
+   - **Solution**: Adjust rate limits based on actual usage patterns, implement burst allowances, or use dynamic rate limiting based on system capacity
+
+2. **Bypassed Rate Limits**
+   - **Problem**: Rate limits are ineffective due to distributed clients
+   - **Solution**: Implement rate limiting based on user identity rather than source IP, use authentication tokens for rate limit tracking
+
+3. **Poor Performance Under Load**
+   - **Problem**: Rate limiting code becomes a bottleneck
+   - **Solution**: Use efficient data structures, consider distributed rate limiting with Redis, implement local caching of rate limit status
+
+4. **Inconsistent Distributed Rate Limiting**
+   - **Problem**: Different servers apply different limits
+   - **Solution**: Use a centralized rate limit store (Redis), implement consistent hashing, or use a distributed rate limit protocol
+
+5. **Rate Limiter Memory Leaks**
+   - **Problem**: Tracking too many users causes memory issues
+   - **Solution**: Implement expiration for rate limit records, use efficient storage like Redis with TTL, implement cleanup for inactive users
+
+### Common Issues and Solutions for Generators
+
+1. **Goroutine Leaks**
+   - **Problem**: Generators are created but never fully consumed
+   - **Solution**: Always use context for cancellation, implement timeouts, ensure proper channel closing
+
+2. **Memory Growth**
+   - **Problem**: Generator chain uses more memory than expected
+   - **Solution**: Process data in smaller chunks, implement backpressure, monitor memory usage, use object pooling
+
+3. **Pipeline Deadlocks**
+   - **Problem**: Generator chain has deadlocked stages
+   - **Solution**: Use buffered channels where appropriate, ensure proper channel closing, implement timeouts for all operations
+
+4. **Poor Performance**
+   - **Problem**: Generator pipeline is slower than expected
+   - **Solution**: Profile to find bottlenecks, adjust buffer sizes, balance worker counts, consider batch processing
+
+5. **Error Handling Confusion**
+   - **Problem**: Errors get lost in the pipeline or handling is inconsistent
+   - **Solution**: Use consistent error handling strategy, propagate context cancellation, consider using structured error types
+
+### Debugging Techniques
+
+1. **Rate Limiter Debugging**
+   ```go
+   // Add debug logging to track rate limit decisions
+   func (tb *TokenBucket) Wait(ctx context.Context) error {
+       start := time.Now()
+       result := tb.tryAcquire()
+       
+       if result {
+           log.Printf("Rate limit: allowed immediately")
+       } else {
+           log.Printf("Rate limit: blocked, waiting for token")
+           // Wait for token or context cancellation
+           select {
+           case <-tb.tokens:
+               log.Printf("Rate limit: allowed after %v wait", time.Since(start))
+               return nil
+           case <-ctx.Done():
+               log.Printf("Rate limit: cancelled after %v wait", time.Since(start))
+               return ctx.Err()
+           }
+       }
+       
+       return nil
+   }
+   ```
+
+2. **Channel State Visualization**
+   ```go
+   // Monitor channel capacity usage
+   func monitorChannel(ch chan interface{}, name string) {
+       ticker := time.NewTicker(time.Second)
+       defer ticker.Stop()
+       
+       for range ticker.C {
+           log.Printf("Channel %s: %d/%d (%.1f%% full)",
+               name, len(ch), cap(ch), float64(len(ch))/float64(cap(ch))*100)
+       }
+   }
+   ```
+
+3. **Pipeline Stage Timing**
+   ```go
+   // Wrap a generator stage with timing measurements
+   func timeStage(name string, in <-chan Data) <-chan Data {
+       out := make(chan Data)
+       
+       go func() {
+           defer close(out)
+           
+           count := 0
+           start := time.Now()
+           
+           for data := range in {
+               stageStart := time.Now()
+               
+               // Forward the data
+               out <- data
+               
+               count++
+               if count%100 == 0 {
+                   elapsed := time.Since(stageStart)
+                   log.Printf("Stage %s: processed %d items, last 100 took %v (%.2f items/sec)",
+                       name, count, elapsed, float64(100)/elapsed.Seconds())
+               }
+           }
+           
+           totalTime := time.Since(start)
+           log.Printf("Stage %s complete: %d items in %v (%.2f items/sec)",
+               name, count, totalTime, float64(count)/totalTime.Seconds())
+       }()
+       
+       return out
+   }
+   ```
+
+4. **Memory Usage Tracking**
+   ```go
+   // Track memory usage during pipeline processing
+   func trackMemory(ctx context.Context, interval time.Duration) {
+       ticker := time.NewTicker(interval)
+       defer ticker.Stop()
+       
+       var lastAlloc uint64
+       
+       for {
+           select {
+           case <-ticker.C:
+               var m runtime.MemStats
+               runtime.ReadMemStats(&m)
+               
+               currentAlloc := m.Alloc / 1024 / 1024 // MB
+               allocDiff := int64(currentAlloc) - int64(lastAlloc)
+               
+               log.Printf("Memory: %d MB (Δ%+d MB)", currentAlloc, allocDiff)
+               lastAlloc = currentAlloc
+               
+           case <-ctx.Done():
+               return
+           }
+       }
+   }
+   ```
+
+5. **Context Cancellation Tracing**
+   ```go
+   // Trace context cancellation through a pipeline
+   func traceCtx(ctx context.Context, name string) context.Context {
+       ctx, cancel := context.WithCancel(ctx)
+       
+       go func() {
+           select {
+           case <-ctx.Done():
+               log.Printf("Context %s cancelled: %v", name, ctx.Err())
+           }
+       }()
+       
+       return ctx
+   }
+   ```
+
+By understanding and addressing these common issues with rate limiters and generators, you'll be able to build robust, efficient, and memory-friendly concurrent applications in Go.
+
+### Exercises and Micro-Projects
+
+#### Exercise 1: Concurrent Data Processing Pipeline
+Create a data processing pipeline that reads data from multiple files, processes them in parallel, and aggregates the results. Implement the following stages:
+- File finding stage (searches for files)
+- Data reading stage (reads the contents)
+- Processing stage (transforms the data)
+- Aggregation stage (combines results)
+- Output stage (writes to file or console)
+
+Use goroutines, channels, and proper error handling to build a robust pipeline that can process large amounts of data efficiently.
+
+#### Exercise 2: Rate-Limited API Client
+Build an HTTP client that can make concurrent API requests but respects rate limits. The client should:
+- Allow specifying a maximum number of concurrent requests
+- Implement a token bucket rate limiter
+- Handle retries with exponential backoff
+- Support request timeouts and cancellation
+- Provide a clean API for users to make requests
+
+Test your client against a real API (like GitHub's) or use a mock server.
+
+#### Exercise 3: Worker Pool with Priority Queue
+Implement a worker pool that processes tasks from a priority queue. The system should:
+- Maintain a fixed number of worker goroutines
+- Process tasks based on priority, not just arrival time
+- Allow tasks to be cancelled
+- Provide statistics on processing times and queue lengths
+- Handle graceful shutdown
+
+Use this to process different types of tasks with varying priorities.
+
+#### Exercise 4: Distributed Counter
+Create a system for maintaining counter statistics across multiple goroutines without locks. Implement:
+- A set of counter goroutines that receive increment/decrement operations
+- A dispatcher that distributes counter operations
+- A way to retrieve the current count
+- Benchmarks comparing this approach vs. mutex-based counters
+
+#### Exercise 5: Context-Aware Cache
+Implement a cache that respects context cancellation and deadlines. The cache should:
+- Store values with optional TTL (time to live)
+- Support context-aware get/set operations
+- Allow batch operations
+- Implement background cleanup of expired items
+- Support cache size limits with eviction policies
+
+### Micro-Project: Real-time Chat System
+
+Develop a simple real-time chat system using Go's concurrency features.
+
+**Requirements:**
+1. Server that accepts WebSocket connections from clients
+2. Support for multiple chat rooms
+3. User presence tracking (online/offline status)
+4. Message broadcasting to room participants
+5. Private messaging between users
+6. Rate limiting to prevent spam
+7. Graceful shutdown that preserves messages
+
+**Components to Implement:**
+- Connection manager (tracks active WebSocket connections)
+- Room manager (handles room membership)
+- Message broker (distributes messages to appropriate recipients)
+- User manager (handles user states and permissions)
+- Rate limiter (prevents message flooding)
+- Persistence layer (saves messages for retrieval)
+
+**Advanced Features:**
+- Typing indicators
+- Read receipts
+- Message history retrieval
+- File sharing
+- User authentication
+
+## Success Criteria
+
+You've mastered Go concurrency when you can:
+
+1. **Design concurrent systems**
+   - Choose appropriate concurrency patterns for a given problem
+   - Balance parallelism with resource constraints
+   - Structure code to avoid race conditions and deadlocks
+   - Apply fan-out, fan-in, pipelines, and worker pools correctly
+
+2. **Use goroutines effectively**
+   - Create the right number of goroutines for a given workload
+   - Ensure goroutines terminate properly
+   - Handle errors in concurrent code
+   - Prevent goroutine leaks
+
+3. **Master channel operations**
+   - Choose between buffered and unbuffered channels
+   - Properly close channels
+   - Handle closed channel detection
+   - Apply select statements for multiplexing
+   - Use channel direction constraints
+
+4. **Implement cancellation and timeouts**
+   - Use context to propagate cancellation signals
+   - Apply appropriate timeouts for operations
+   - Handle context values properly
+   - Clean up resources when operations are cancelled
+
+5. **Manage shared state**
+   - Choose between channels and mutexes appropriately
+   - Implement thread-safe data structures
+   - Avoid race conditions
+   - Use atomics when appropriate
+
+6. **Write robust concurrent code**
+   - Handle edge cases like early termination
+   - Implement graceful shutdown procedures
+   - Write comprehensive tests for concurrent code
+   - Debug concurrency issues effectively
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+1. **Deadlocks**
+   - **Problem**: All goroutines are blocked, waiting for each other
+   - **Detection**: Go runtime reports "fatal error: all goroutines are asleep - deadlock!"
+   - **Solution**: Ensure proper channel usage (don't forget to close), avoid circular dependencies, use buffered channels when appropriate, or implement timeouts
+
+2. **Goroutine leaks**
+   - **Problem**: Goroutines never terminate, consuming resources
+   - **Detection**: Increasing memory usage, `runtime.NumGoroutine()` shows growing count
+   - **Solution**: Always provide a way for goroutines to exit (context cancellation, done channels), ensure channels are properly closed
+
+3. **Race conditions**
+   - **Problem**: Unpredictable behavior due to concurrent access to shared data
+   - **Detection**: Use `-race` flag with `go test` or `go build`
+   - **Solution**: Use synchronization primitives (mutex, channels) or ensure data is only accessed by one goroutine at a time
+
+4. **Channel send on closed channel**
+   - **Problem**: Sending on a closed channel causes panic
+   - **Detection**: Runtime panic: "send on closed channel"
+   - **Solution**: Ensure only one goroutine is responsible for closing a channel, use sync.Once for closing if multiple goroutines might close it
+
+5. **Context leaks**
+   - **Problem**: Not calling cancel() function leads to context leaks
+   - **Detection**: Growing number of goroutines, resource usage
+   - **Solution**: Always defer cancel() immediately after creating a context with cancellation
+
+6. **Oversynchronization**
+   - **Problem**: Too much synchronization leading to performance issues
+   - **Detection**: Poor performance, excessive blocking
+   - **Solution**: Reduce lock contention, use read-write locks, consider lock-free algorithms
+
+7. **Channel backpressure**
+   - **Problem**: Fast producers overwhelm slow consumers
+   - **Detection**: Growing memory usage, delayed processing
+   - **Solution**: Use buffered channels appropriately, implement rate limiting, or use worker pools with controlled concurrency
+
+### Debugging Techniques
+
+1. **Race detector**
+   ```bash
+   go test -race ./...
+   go run -race myprogram.go
+   ```
+   Identifies data races in your code
+
+2. **Logging goroutine information**
+   ```go
+   log.Printf("Goroutines: %d", runtime.NumGoroutine())
+   ```
+   Track how many goroutines are running at different points
+
+3. **Stack traces for all goroutines**
+   ```go
+   buf := make([]byte, 64*1024)
+   n := runtime.Stack(buf, true)
+   log.Printf("=== Stack trace for %d goroutines ===\n%s", runtime.NumGoroutine(), buf[:n])
+   ```
+   Print stack traces for all goroutines to see what they're doing
+
+4. **Timeout-based debugging**
+   ```go
+   func debugDeadlock() {
+       time.AfterFunc(10*time.Second, func() {
+           log.Println("Possible deadlock detected")
+           buf := make([]byte, 64*1024)
+           n := runtime.Stack(buf, true)
+           log.Printf("Stack: %s", buf[:n])
+           os.Exit(1)
+       })
+   }
+   ```
+   Force a stack dump if your program appears stuck
+
+5. **Channel state inspection**
+   ```go
+   // For buffered channels, check capacity and length
+   fmt.Printf("Channel: %d/%d\n", len(ch), cap(ch))
+   ```
+   Monitor channel buffer utilization
+
+6. **Context tracing**
+   ```go
+   func withContextTracing(parent context.Context, name string) context.Context {
+       ctx, cancel := context.WithCancel(parent)
+       
+       go func() {
+           select {
+           case <-parent.Done():
+               log.Printf("Context %s cancelled by parent: %v", name, parent.Err())
+           case <-ctx.Done():
+               log.Printf("Context %s cancelled directly: %v", name, ctx.Err())
+           }
+       }()
+       
+       return ctx
+   }
+   ```
+   Track when and why contexts are being cancelled
+
+By mastering these troubleshooting techniques and understanding common concurrency pitfalls, you'll be well-equipped to build robust, efficient concurrent applications in Go.
