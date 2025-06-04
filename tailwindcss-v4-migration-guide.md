@@ -41,6 +41,11 @@ export default config;
 npm install @tailwindcss/cli
 ```
 
+### Method 4: CDN (for vanilla html/css and experimenting)
+```html
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+```
+
 ## CSS Import Changes
 
 ### v3 Syntax (OLD - Don't use)
